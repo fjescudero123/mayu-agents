@@ -9,6 +9,7 @@
     "runtime_script_path": "minutas_archivadas/runtime/FiscalizadorReunionesMAYU.core.ps1",
     "alertas_enviadas_folder": "minutas_archivadas/alertas_enviadas",
     "evaluaciones_folder": "minutas_archivadas/evaluaciones",
+    "seguimiento_folder": "minutas_archivadas/seguimiento_compromisos",
     "reportes_folder": "minutas_archivadas/reportes"
   },
   "mail": {
