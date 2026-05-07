@@ -86,7 +86,11 @@ function Get-CoreScriptFromSharePoint {
   $encodedPath = ConvertTo-DrivePath $CorePath
   $uri = "https://graph.microsoft.com/v1.0/sites/$SiteId/drive/root:/$encodedPath`:/content"
   $response = Invoke-WebRequest -Method Get -Uri $uri -Headers @{ Authorization = "Bearer $Token" } -UseBasicParsing
-  return [string]$response.Content
+  $content = $response.Content
+  if ($content -is [byte[]]) {
+    $content = [System.Text.Encoding]::UTF8.GetString($content)
+  }
+  return [string]$content
 }
 
 $configJson = Get-RunbookVariable "MayuFiscalizadorConfigJson"

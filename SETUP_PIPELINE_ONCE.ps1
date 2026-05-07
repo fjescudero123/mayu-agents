@@ -54,16 +54,7 @@ function Set-GitHubSecret {
     throw "Secret GitHub vacio: $Name"
   }
   Write-Host "GitHub secret: $Name" -ForegroundColor Cyan
-  $path = Join-Path $env:TEMP ("mayu_secret_$([Guid]::NewGuid().ToString("N")).txt")
-  try {
-    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-    [System.IO.File]::WriteAllText($path, $Value, $utf8NoBom)
-    Invoke-External -Label "gh secret set $Name" -Command { gh secret set $Name --repo $RepoFullName --body-file $path }
-  } finally {
-    if (Test-Path $path) {
-      Remove-Item $path -Force
-    }
-  }
+  Invoke-External -Label "gh secret set $Name" -Command { gh secret set $Name --repo $RepoFullName --body $Value }
 }
 
 Write-Host ""
