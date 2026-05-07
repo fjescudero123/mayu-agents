@@ -31,7 +31,10 @@ if ($remotes -notcontains "origin") {
 
 Write-Host "Subiendo a GitHub..." -ForegroundColor Cyan
 Write-Host "Nota: como el repo remoto fue creado con README inicial, se reemplaza por este paquete local." -ForegroundColor Yellow
-git push -u origin main --force-with-lease
+git push -u origin main --force
+if ($LASTEXITCODE -ne 0) {
+  throw "El push a GitHub fallo. Revisa el error rojo anterior."
+}
 
 Write-Host ""
 Write-Host "Push completado." -ForegroundColor Green
