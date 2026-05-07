@@ -1,0 +1,17 @@
+.env
+.env.*
+*.log
+*.tmp
+*.zip
+.azure*
+
+# Nunca subir credenciales locales ni configuraciones sensibles.
+mayu_mail_config.json
+**/mayu_mail_config.json
+*secret*
+*credentials*
+
+# Archivos temporales de sistema/editor.
+.DS_Store
+Thumbs.db
+*.swp

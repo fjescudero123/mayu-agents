@@ -1,0 +1,118 @@
+{
+  "timezone": "America/Santiago",
+  "sharepoint": {
+    "host": "inmobiliariamayu.sharepoint.com",
+    "minutas_entrada": "minutas_entrada",
+    "minutas_archivadas": "minutas_archivadas",
+    "minutas_entrada_link": "https://inmobiliariamayu.sharepoint.com/Shared%20Documents/minutas_entrada",
+    "templates_folder": "fiscalizador_templates",
+    "runtime_script_path": "minutas_archivadas/runtime/FiscalizadorReunionesMAYU.core.ps1",
+    "alertas_enviadas_folder": "minutas_archivadas/alertas_enviadas",
+    "evaluaciones_folder": "minutas_archivadas/evaluaciones",
+    "reportes_folder": "minutas_archivadas/reportes"
+  },
+  "mail": {
+    "sender": "notificaciones@imayu.cl",
+    "felix": "fjescudero@imayu.cl"
+  },
+  "holidays": [
+    "2026-05-01",
+    "2026-05-21"
+  ],
+  "meetings": [
+    {
+      "tipo": "planta_diario",
+      "nombre": "Daily de planta",
+      "days": ["MO", "TU", "WE", "TH", "FR"],
+      "start": "08:30",
+      "end": "08:40",
+      "responsable": "Felipe Jerez",
+      "to": ["fjerez@imayu.cl"],
+      "cc": ["fjescudero@imayu.cl", "clecaros@imayu.cl"]
+    },
+    {
+      "tipo": "comercial",
+      "nombre": "Comite Comercial",
+      "days": ["MO"],
+      "start": "09:00",
+      "end": "09:45",
+      "responsable": "Felix Escudero Vargas / Emilio Fernandez",
+      "to": ["fescudero@imayu.cl", "efernandez@imayu.cl"],
+      "cc": ["fjescudero@imayu.cl"]
+    },
+    {
+      "tipo": "proyectos",
+      "nombre": "Comite Proyectos",
+      "days": ["TU"],
+      "start": "10:00",
+      "end": "11:00",
+      "responsable": "Jose Santibanez / Emilio Fernandez",
+      "to": ["jsantibanez@imayu.cl", "efernandez@imayu.cl"],
+      "cc": ["fjescudero@imayu.cl"]
+    },
+    {
+      "tipo": "id",
+      "nombre": "Comite I+D",
+      "days": ["WE"],
+      "start": "15:00",
+      "end": "15:30",
+      "responsable": "Martin Epelman",
+      "to": ["m.epelman@imayu.cl"],
+      "cc": ["fjescudero@imayu.cl"]
+    },
+    {
+      "tipo": "financiero_semanal",
+      "nombre": "Financiero Semanal",
+      "days": ["TH"],
+      "start": "09:00",
+      "end": "09:30",
+      "responsable": "Valentina Escudero",
+      "to": ["vescudero@imayu.cl"],
+      "cc": ["fjescudero@imayu.cl"]
+    },
+    {
+      "tipo": "ejecutivo",
+      "nombre": "Comite Ejecutivo",
+      "days": ["FR"],
+      "start": "11:00",
+      "end": "12:00",
+      "responsable": "Felix Escudero",
+      "to": ["fjescudero@imayu.cl"],
+      "cc": []
+    }
+  ],
+  "monthly_meetings": [
+    {
+      "tipo": "eerr_mensual",
+      "nombre": "EERR Mensual",
+      "rule": "first_tuesday",
+      "start": "14:00",
+      "end": "15:30",
+      "responsable": "Valentina Escudero",
+      "to": ["vescudero@imayu.cl"],
+      "cc": ["fjescudero@imayu.cl"]
+    },
+    {
+      "tipo": "capacidad_mensual",
+      "nombre": "Planificacion de Capacidad",
+      "rule": "third_thursday",
+      "start": "11:00",
+      "end": "11:45",
+      "responsable": "Martin Epelman / Carlos Lecaros",
+      "to": ["m.epelman@imayu.cl", "clecaros@imayu.cl"],
+      "cc": ["fjescudero@imayu.cl"],
+      "exceptions": ["2026-05-28"]
+    },
+    {
+      "tipo": "directorio",
+      "nombre": "Directorio",
+      "rule": "third_friday",
+      "not_before": "2026-05-15",
+      "start": "15:00",
+      "end": "16:30",
+      "responsable": "Felix Escudero",
+      "to": ["fjescudero@imayu.cl"],
+      "cc": ["fescudero@imayu.cl", "g.elgueta@imayu.cl"]
+    }
+  ]
+}
