@@ -137,9 +137,29 @@ function Get-DateAtTime {
   $TargetDate.Date.AddHours([int]$parts[0]).AddMinutes([int]$parts[1])
 }
 
+function Get-MeetingFileLabels {
+  param([string]$MeetingType)
+  if ($MeetingType -eq "id") {
+    return @("I+D", "id")
+  }
+  return @($MeetingType)
+}
+
 function Get-ExpectedFileName {
   param([string]$MeetingType, [datetime]$TargetDate)
-  "AGENDA_{0}_{1}_{2}_{3}.docx" -f $MeetingType, $TargetDate.ToString("dd"), $TargetDate.ToString("MM"), $TargetDate.ToString("yyyy")
+  $labels = @(Get-MeetingFileLabels -MeetingType $MeetingType)
+  $label = $labels[0]
+  "AGENDA_{0}_{1}_{2}_{3}.docx" -f $label, $TargetDate.ToString("dd"), $TargetDate.ToString("MM"), $TargetDate.ToString("yyyy")
+}
+
+function Get-ExpectedEvidenceNames {
+  param([string]$MeetingType, [datetime]$TargetDate)
+  $names = @()
+  foreach ($label in (Get-MeetingFileLabels -MeetingType $MeetingType)) {
+    $names += ("AGENDA_{0}_{1}_{2}_{3}.docx" -f $label, $TargetDate.ToString("dd"), $TargetDate.ToString("MM"), $TargetDate.ToString("yyyy")).ToLowerInvariant()
+    $names += ("minuta_{0}_{1}.html" -f $label, $TargetDate.ToString("yyyy-MM-dd")).ToLowerInvariant()
+  }
+  return @($names | Select-Object -Unique)
 }
 
 function Get-ExpectedOccurrences {
@@ -361,9 +381,9 @@ function Send-GraphMail {
 
 function Test-EvidencePresent {
   param([object[]]$Items, [string]$MeetingType, [datetime]$TargetDate)
-  $expected = (Get-ExpectedFileName -MeetingType $MeetingType -TargetDate $TargetDate).ToLowerInvariant()
-  $processed = ("minuta_{0}_{1}.html" -f $MeetingType, $TargetDate.ToString("yyyy-MM-dd")).ToLowerInvariant()
+  $expectedNames = @(Get-ExpectedEvidenceNames -MeetingType $MeetingType -TargetDate $TargetDate)
   $processedMd = ("{0}.md" -f $TargetDate.ToString("yyyy-MM-dd")).ToLowerInvariant()
+  $pathLabels = @(Get-MeetingFileLabels -MeetingType $MeetingType | ForEach-Object { $_.ToLowerInvariant() })
 
   foreach ($item in @($Items)) {
     if ($null -eq $item) {
@@ -371,14 +391,519 @@ function Test-EvidencePresent {
     }
     $name = ([string]$item.name).ToLowerInvariant()
     $path = ([string]$item._mayuRelativePath).ToLowerInvariant()
-    if ($name -eq $expected -or $name -eq $processed) {
+    if ($expectedNames -contains $name) {
       return $true
     }
-    if ($path -like "*$MeetingType*" -and $name -eq $processedMd) {
-      return $true
+    foreach ($label in $pathLabels) {
+      if ($path -like "*$label*" -and $name -eq $processedMd) {
+        return $true
+      }
     }
   }
   return $false
+}
+
+function Find-EvidenceItem {
+  param([object[]]$Items, [string]$MeetingType, [datetime]$TargetDate)
+  $expectedNames = @(Get-ExpectedEvidenceNames -MeetingType $MeetingType -TargetDate $TargetDate)
+  $processedMd = ("{0}.md" -f $TargetDate.ToString("yyyy-MM-dd")).ToLowerInvariant()
+  $pathLabels = @(Get-MeetingFileLabels -MeetingType $MeetingType | ForEach-Object { $_.ToLowerInvariant() })
+
+  foreach ($item in @($Items)) {
+    if ($null -eq $item -or $item.folder) {
+      continue
+    }
+    $name = ([string]$item.name).ToLowerInvariant()
+    $path = ([string]$item._mayuRelativePath).ToLowerInvariant()
+    if ($expectedNames -contains $name) {
+      return $item
+    }
+    foreach ($label in $pathLabels) {
+      if ($path -like "*$label*" -and $name -eq $processedMd) {
+        return $item
+      }
+    }
+  }
+  return $null
+}
+
+function Convert-DocxBytesToText {
+  param([byte[]]$Bytes)
+  Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
+  $tempRoot = Join-Path $env:TEMP ("mayu_docx_" + [Guid]::NewGuid().ToString("N"))
+  $tempDocx = Join-Path $env:TEMP ("mayu_docx_" + [Guid]::NewGuid().ToString("N") + ".docx")
+  try {
+    [System.IO.File]::WriteAllBytes($tempDocx, $Bytes)
+    [System.IO.Compression.ZipFile]::ExtractToDirectory($tempDocx, $tempRoot)
+    $documentPath = Join-Path $tempRoot "word/document.xml"
+    if (-not (Test-Path $documentPath)) {
+      return ""
+    }
+    [xml]$xml = Get-Content -Raw -Path $documentPath
+    $texts = @()
+    foreach ($node in $xml.GetElementsByTagName("w:t")) {
+      if ($node.InnerText) {
+        $texts += $node.InnerText
+      }
+    }
+    return ($texts -join " ").Trim()
+  } catch {
+    Write-Warning "No se pudo leer texto DOCX. $($_.Exception.Message)"
+    return ""
+  } finally {
+    if (Test-Path $tempDocx) {
+      Remove-Item $tempDocx -Force
+    }
+    if (Test-Path $tempRoot) {
+      Remove-Item $tempRoot -Recurse -Force
+    }
+  }
+}
+
+function Convert-BytesToMeetingText {
+  param([byte[]]$Bytes, [string]$FileName)
+  $extension = [System.IO.Path]::GetExtension($FileName).ToLowerInvariant()
+  if ($extension -eq ".docx") {
+    return Convert-DocxBytesToText -Bytes $Bytes
+  }
+  $text = [System.Text.Encoding]::UTF8.GetString($Bytes)
+  if ($extension -eq ".html" -or $extension -eq ".htm") {
+    $text = [regex]::Replace($text, "<script[\s\S]*?</script>", " ")
+    $text = [regex]::Replace($text, "<style[\s\S]*?</style>", " ")
+    $text = [regex]::Replace($text, "<[^>]+>", " ")
+    $text = [System.Net.WebUtility]::HtmlDecode($text)
+  }
+  return ([regex]::Replace($text, "\s+", " ")).Trim()
+}
+
+function ConvertFrom-ModelJson {
+  param([string]$Text)
+  if ([string]::IsNullOrWhiteSpace($Text)) {
+    return $null
+  }
+  $candidate = $Text.Trim()
+  $candidate = [regex]::Replace($candidate, "^```(?:json)?\s*", "")
+  $candidate = [regex]::Replace($candidate, "\s*```$", "")
+  $start = $candidate.IndexOf("{")
+  $end = $candidate.LastIndexOf("}")
+  if ($start -ge 0 -and $end -gt $start) {
+    $candidate = $candidate.Substring($start, $end - $start + 1)
+  }
+  try {
+    return ($candidate | ConvertFrom-Json)
+  } catch {
+    Write-Warning "OpenAI no devolvio JSON parseable para seguimiento. Se guardara respuesta como texto."
+    return $null
+  }
+}
+
+function Get-IntelligenceFileName {
+  param([string]$MeetingType, [datetime]$TargetDate)
+  "seguimiento_{0}_{1}.json" -f $MeetingType, $TargetDate.ToString("yyyy-MM-dd")
+}
+
+function Get-IntelligenceFolder {
+  param([object]$Config)
+  $folder = [string]$Config.sharepoint.seguimiento_folder
+  if ([string]::IsNullOrWhiteSpace($folder)) {
+    return "minutas_archivadas/seguimiento_compromisos"
+  }
+  return $folder
+}
+
+function Find-PreviousIntelligenceItem {
+  param([object[]]$Items, [string]$MeetingType, [datetime]$TargetDate)
+  $pattern = "^seguimiento_$([regex]::Escape($MeetingType))_(\d{4}-\d{2}-\d{2})\.json$"
+  $candidates = @()
+  foreach ($item in @($Items)) {
+    if ($null -eq $item -or [string]::IsNullOrWhiteSpace([string]$item.name)) {
+      continue
+    }
+    $match = [regex]::Match([string]$item.name, $pattern)
+    if ($match.Success) {
+      $date = [datetime]::Parse($match.Groups[1].Value)
+      if ($date.Date -lt $TargetDate.Date) {
+        $candidates += [pscustomobject]@{ Date = $date; Item = $item }
+      }
+    }
+  }
+  if (@($candidates).Count -eq 0) {
+    return $null
+  }
+  return (@($candidates | Sort-Object Date -Descending)[0]).Item
+}
+
+function Read-TextDriveItem {
+  param([string]$Token, [string]$SiteId, [object]$Item)
+  if ($null -eq $Item -or [string]::IsNullOrWhiteSpace([string]$Item._mayuRelativePath)) {
+    return ""
+  }
+  $bytes = Get-FileBytes -Token $Token -SiteId $SiteId -FilePath ([string]$Item._mayuRelativePath)
+  return [System.Text.Encoding]::UTF8.GetString($bytes)
+}
+
+function New-MeetingIntelligence {
+  param(
+    [object]$Occurrence,
+    [string]$EvidenceText,
+    [object]$PreviousIntelligence
+  )
+
+  $previousJson = if ($PreviousIntelligence) { $PreviousIntelligence | ConvertTo-Json -Depth 20 } else { "{}" }
+  if ($EvidenceText.Length -gt 14000) {
+    $EvidenceText = $EvidenceText.Substring(0, 14000)
+  }
+
+  $prompt = @"
+Eres el Agente de Continuidad Operacional de MAYU.
+Analiza la minuta de una reunion y comparala con el seguimiento anterior si existe.
+No inventes compromisos, responsables ni fechas. Si algo no esta en la minuta, usa null o [].
+Devuelve SOLO JSON valido con esta estructura:
+{
+  "tipo": "$($Occurrence.Tipo)",
+  "fecha": "$($Occurrence.Fecha.ToString("yyyy-MM-dd"))",
+  "reunion": "$($Occurrence.Nombre)",
+  "responsable_reunion": "$([string]$Occurrence.Meeting.responsable)",
+  "resumen": "",
+  "asistencia": { "realizada": true, "asistentes_detectados": [] },
+  "compromisos": [
+    { "descripcion": "", "responsable": "", "fecha_objetivo": null, "estado_inferido": "nuevo|cumplido|pendiente|vencido|bloqueado|parcial", "evidencia": "" }
+  ],
+  "compromisos_cumplidos_desde_anterior": [],
+  "pendientes_arrastrados": [],
+  "bloqueos": [
+    { "descripcion": "", "responsable": "", "impacto": "", "accion_recomendada": "" }
+  ],
+  "decisiones": [],
+  "riesgos": [],
+  "seguimiento_recomendado": "",
+  "confianza": 0.0
+}
+
+Seguimiento anterior:
+$previousJson
+
+Minuta actual:
+$EvidenceText
+"@
+
+  $ai = Invoke-OpenAiText -Prompt $prompt
+  $parsed = ConvertFrom-ModelJson -Text $ai
+  if ($parsed) {
+    return $parsed
+  }
+  return [pscustomobject]@{
+    tipo = [string]$Occurrence.Tipo
+    fecha = $Occurrence.Fecha.ToString("yyyy-MM-dd")
+    reunion = [string]$Occurrence.Nombre
+    responsable_reunion = [string]$Occurrence.Meeting.responsable
+    resumen = "No se pudo parsear el seguimiento IA."
+    asistencia = @{ realizada = $true; asistentes_detectados = @() }
+    compromisos = @()
+    compromisos_cumplidos_desde_anterior = @()
+    pendientes_arrastrados = @()
+    bloqueos = @()
+    decisiones = @()
+    riesgos = @()
+    seguimiento_recomendado = $ai
+    confianza = 0
+  }
+}
+
+function Get-MeetingIntelligenceRows {
+  param(
+    [object]$Config,
+    [string]$Token,
+    [string]$SiteId,
+    [object[]]$Occurrences,
+    [object[]]$EvidenceItems,
+    [object[]]$ExistingIntelligenceItems
+  )
+
+  $folder = Get-IntelligenceFolder -Config $Config
+  Ensure-GraphFolder -Token $Token -SiteId $SiteId -FolderPath $folder
+
+  $rows = @()
+  foreach ($occ in @($Occurrences)) {
+    $evidenceItem = Find-EvidenceItem -Items $EvidenceItems -MeetingType $occ.Tipo -TargetDate $occ.Fecha
+    if ($null -eq $evidenceItem) {
+      continue
+    }
+    try {
+      $bytes = Get-FileBytes -Token $Token -SiteId $SiteId -FilePath ([string]$evidenceItem._mayuRelativePath)
+      $text = Convert-BytesToMeetingText -Bytes $bytes -FileName ([string]$evidenceItem.name)
+      if ([string]::IsNullOrWhiteSpace($text)) {
+        continue
+      }
+
+      $previousItem = Find-PreviousIntelligenceItem -Items $ExistingIntelligenceItems -MeetingType $occ.Tipo -TargetDate $occ.Fecha
+      $previous = $null
+      if ($previousItem) {
+        try {
+          $previousText = Read-TextDriveItem -Token $Token -SiteId $SiteId -Item $previousItem
+          if (-not [string]::IsNullOrWhiteSpace($previousText)) {
+            $previous = $previousText | ConvertFrom-Json
+          }
+        } catch {
+          Write-Warning "No se pudo leer seguimiento previo para $($occ.Tipo) $($occ.Fecha.ToString("yyyy-MM-dd")). $($_.Exception.Message)"
+        }
+      }
+
+      $intel = New-MeetingIntelligence -Occurrence $occ -EvidenceText $text -PreviousIntelligence $previous
+      $intel | Add-Member -NotePropertyName "_mayuTo" -NotePropertyValue @($occ.Meeting.to) -Force
+      $intel | Add-Member -NotePropertyName "_mayuCc" -NotePropertyValue @($occ.Meeting.cc) -Force
+      $intel | Add-Member -NotePropertyName "_mayuResponsable" -NotePropertyValue ([string]$occ.Meeting.responsable) -Force
+      $json = $intel | ConvertTo-Json -Depth 30
+      $fileName = Get-IntelligenceFileName -MeetingType $occ.Tipo -TargetDate $occ.Fecha
+      Write-TextFileToGraph -Token $Token -SiteId $SiteId -FilePath "$folder/$fileName" -Text $json -ContentType "application/json; charset=utf-8"
+      $rows += $intel
+    } catch {
+      Write-Warning "No se pudo generar seguimiento para $($occ.Tipo) $($occ.Fecha.ToString("yyyy-MM-dd")). $($_.Exception.Message)"
+    }
+  }
+  return $rows
+}
+
+function Convert-IntelligenceRowsToHtml {
+  param([object[]]$Rows)
+  if (@($Rows).Count -eq 0) {
+    return "<p>No hay minutas procesadas para seguimiento de compromisos en este periodo.</p>"
+  }
+  $html = ""
+  foreach ($row in @($Rows)) {
+    $commitments = @($row.compromisos).Count
+    $done = @($row.compromisos | Where-Object { $_.estado_inferido -eq "cumplido" }).Count
+    $blocked = @($row.bloqueos).Count
+    $carried = @($row.pendientes_arrastrados).Count
+    $html += "<div style='border:1px solid #ddd;padding:10px;margin:8px 0;'><strong>$($row.fecha) - $($row.reunion)</strong><br/>"
+    $html += "<span>Compromisos: $commitments. Cumplidos: $done. Arrastrados: $carried. Bloqueos: $blocked.</span><br/>"
+    if ($row.resumen) {
+      $html += "<span>$([System.Security.SecurityElement]::Escape([string]$row.resumen))</span><br/>"
+    }
+    if ($row.seguimiento_recomendado) {
+      $html += "<em>$([System.Security.SecurityElement]::Escape([string]$row.seguimiento_recomendado))</em>"
+    }
+    $html += "</div>"
+  }
+  return $html
+}
+
+function Send-ResponsibleIntelligenceReports {
+  param(
+    [object]$Config,
+    [string]$Token,
+    [string]$Title,
+    [object[]]$Rows
+  )
+
+  $groups = @{}
+  foreach ($row in @($Rows)) {
+    $to = @($row._mayuTo | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+    if (@($to).Count -eq 0) {
+      continue
+    }
+    $key = ($to | Sort-Object) -join ";"
+    if (-not $groups.ContainsKey($key)) {
+      $groups[$key] = @()
+    }
+    $groups[$key] += $row
+  }
+
+  foreach ($key in $groups.Keys) {
+    $recipientRows = @($groups[$key])
+    $to = @($key -split ";" | Where-Object { $_ })
+    $cc = @($Config.mail.felix)
+    $html = @"
+<html>
+<body style="font-family: Arial, sans-serif; font-size: 14px; color: #222; max-width: 850px;">
+  <h2>$Title</h2>
+  <p>Resumen de compromisos, bloqueos y continuidad de las reuniones bajo tu responsabilidad.</p>
+  $(Convert-IntelligenceRowsToHtml -Rows $recipientRows)
+  <p style="font-size:12px;color:#777;margin-top:24px;">Generado por el Agente de Continuidad Operacional MAYU.</p>
+</body>
+</html>
+"@
+    try {
+      Send-GraphMail `
+        -Token $Token `
+        -Sender $Config.mail.sender `
+        -To $to `
+        -Cc $cc `
+        -Subject $Title `
+        -HtmlBody $html
+    } catch {
+      Write-Warning "No se pudo enviar seguimiento a responsables $key. $($_.Exception.Message)"
+    }
+  }
+}
+
+function Get-ScoreBand {
+  param([int]$Score)
+  if ($Score -ge 90) {
+    return "excelente"
+  }
+  if ($Score -ge 75) {
+    return "bien"
+  }
+  if ($Score -ge 60) {
+    return "requiere seguimiento"
+  }
+  return "critico"
+}
+
+function Get-NormalizedState {
+  param([object]$Value)
+  return ([string]$Value).Trim().ToLowerInvariant()
+}
+
+function Get-ResponsibleScorecards {
+  param([object[]]$StatusRows, [object[]]$IntelligenceRows)
+
+  $groups = @{}
+  foreach ($row in @($StatusRows)) {
+    $to = @($row.to | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+    if (@($to).Count -eq 0) {
+      continue
+    }
+    $key = ($to | Sort-Object) -join ";"
+    if (-not $groups.ContainsKey($key)) {
+      $groups[$key] = [pscustomobject]@{ to = $to; status = @(); intelligence = @() }
+    }
+    $groups[$key].status += $row
+  }
+
+  foreach ($row in @($IntelligenceRows)) {
+    $to = @($row._mayuTo | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+    if (@($to).Count -eq 0) {
+      continue
+    }
+    $key = ($to | Sort-Object) -join ";"
+    if (-not $groups.ContainsKey($key)) {
+      $groups[$key] = [pscustomobject]@{ to = $to; status = @(); intelligence = @() }
+    }
+    $groups[$key].intelligence += $row
+  }
+
+  $cards = @()
+  foreach ($key in $groups.Keys) {
+    $group = $groups[$key]
+    $statusRows = @($group.status)
+    $intelRows = @($group.intelligence)
+    $meetings = @($statusRows).Count
+    $fulfilled = @($statusRows | Where-Object { $_.estado -eq "CUMPLIDA" }).Count
+    $alerts = @($statusRows | Where-Object { $_.alerta -eq "SI" }).Count
+
+    $evidenceScore = if ($meetings -gt 0) { [Math]::Round(($fulfilled / $meetings) * 100, 0) } else { 75 }
+    $commitments = @()
+    foreach ($intel in $intelRows) {
+      $commitments += @($intel.compromisos)
+    }
+    $commitmentCount = @($commitments).Count
+    $doneCommitments = @($commitments | Where-Object { (Get-NormalizedState $_.estado_inferido) -eq "cumplido" }).Count
+    $partialCommitments = @($commitments | Where-Object { (Get-NormalizedState $_.estado_inferido) -eq "parcial" }).Count
+    $badCommitments = @($commitments | Where-Object { @("pendiente", "vencido", "bloqueado") -contains (Get-NormalizedState $_.estado_inferido) }).Count
+    $taskScore = if ($commitmentCount -gt 0) { [Math]::Round((($doneCommitments + ($partialCommitments * 0.5)) / $commitmentCount) * 100, 0) } else { 75 }
+
+    $blockers = 0
+    $carried = 0
+    $risks = 0
+    foreach ($intel in $intelRows) {
+      $blockers += @($intel.bloqueos).Count
+      $carried += @($intel.pendientes_arrastrados).Count
+      $risks += @($intel.riesgos).Count
+    }
+    $problemScore = [Math]::Max(0, 100 - ($blockers * 15) - ($carried * 10))
+    $cleanAdvanceScore = [Math]::Max(0, 100 - ($blockers * 15) - ($carried * 10) - ($risks * 8) - ($alerts * 8))
+    $score = [Math]::Round(($evidenceScore * 0.25) + ($taskScore * 0.35) + ($problemScore * 0.20) + ($cleanAdvanceScore * 0.20), 0)
+
+    $cards += [pscustomobject]@{
+      to = @($group.to)
+      responsable = (@($statusRows.responsable) + @($intelRows._mayuResponsable) | Where-Object { $_ } | Select-Object -First 1)
+      score = [int]$score
+      banda = Get-ScoreBand -Score ([int]$score)
+      evidencia_asistencia = [int]$evidenceScore
+      cumplimiento_tareas = [int]$taskScore
+      resolucion_problemas = [int]$problemScore
+      avances_limpios = [int]$cleanAdvanceScore
+      reuniones_esperadas = $meetings
+      reuniones_con_evidencia = $fulfilled
+      alertas = $alerts
+      compromisos_total = $commitmentCount
+      compromisos_cumplidos = $doneCommitments
+      compromisos_parciales = $partialCommitments
+      compromisos_pendientes = $badCommitments
+      bloqueos = $blockers
+      pendientes_arrastrados = $carried
+      riesgos = $risks
+      reuniones = @($intelRows | ForEach-Object { [pscustomobject]@{ fecha = $_.fecha; reunion = $_.reunion; resumen = $_.resumen; seguimiento_recomendado = $_.seguimiento_recomendado } })
+    }
+  }
+  return $cards
+}
+
+function Convert-ScorecardToHtml {
+  param([object]$Card, [string]$PeriodLabel)
+  $color = if ($Card.score -ge 90) { "#166534" } elseif ($Card.score -ge 75) { "#2563eb" } elseif ($Card.score -ge 60) { "#a16207" } else { "#991b1b" }
+  $meetingsHtml = ""
+  foreach ($meeting in @($Card.reuniones)) {
+    $meetingsHtml += "<li><strong>$($meeting.fecha) - $($meeting.reunion):</strong> $([System.Security.SecurityElement]::Escape([string]$meeting.resumen))</li>"
+  }
+  if (-not $meetingsHtml) {
+    $meetingsHtml = "<li>No hubo seguimiento inteligente disponible para reuniones con evidencia.</li>"
+  }
+  @"
+<html>
+<body style="font-family: Arial, sans-serif; font-size: 14px; color: #222; max-width: 850px;">
+  <h2>Calificacion mensual MAYU - $PeriodLabel</h2>
+  <p><strong>Responsable:</strong> $($Card.responsable)</p>
+  <p style="font-size:24px;color:$color;"><strong>$($Card.score)/100</strong> - $($Card.banda)</p>
+  <table style="border-collapse:collapse;width:100%;font-size:13px;">
+    <tr><th style="text-align:left;border:1px solid #ddd;padding:6px;">Criterio</th><th style="text-align:left;border:1px solid #ddd;padding:6px;">Puntaje</th></tr>
+    <tr><td style="border:1px solid #ddd;padding:6px;">Asistencia / evidencia</td><td style="border:1px solid #ddd;padding:6px;">$($Card.evidencia_asistencia)</td></tr>
+    <tr><td style="border:1px solid #ddd;padding:6px;">Cumplimiento de tareas</td><td style="border:1px solid #ddd;padding:6px;">$($Card.cumplimiento_tareas)</td></tr>
+    <tr><td style="border:1px solid #ddd;padding:6px;">Resolucion de problemas</td><td style="border:1px solid #ddd;padding:6px;">$($Card.resolucion_problemas)</td></tr>
+    <tr><td style="border:1px solid #ddd;padding:6px;">Avances limpios</td><td style="border:1px solid #ddd;padding:6px;">$($Card.avances_limpios)</td></tr>
+  </table>
+  <p><strong>Reuniones:</strong> $($Card.reuniones_con_evidencia) con evidencia de $($Card.reuniones_esperadas) esperadas. <strong>Alertas:</strong> $($Card.alertas).</p>
+  <p><strong>Compromisos:</strong> $($Card.compromisos_cumplidos) cumplidos, $($Card.compromisos_parciales) parciales, $($Card.compromisos_pendientes) pendientes/vencidos/bloqueados, de $($Card.compromisos_total) detectados.</p>
+  <p><strong>Bloqueos:</strong> $($Card.bloqueos). <strong>Pendientes arrastrados:</strong> $($Card.pendientes_arrastrados). <strong>Riesgos:</strong> $($Card.riesgos).</p>
+  <h3>Lectura por reunion</h3>
+  <ul>$meetingsHtml</ul>
+  <p style="font-size:12px;color:#777;margin-top:24px;">Generado por el Agente de Continuidad Operacional MAYU. Puntaje automatico 0-100 basado en evidencia, compromisos, bloqueos y continuidad.</p>
+</body>
+</html>
+"@
+}
+
+function Send-MonthlyScorecards {
+  param(
+    [object]$Config,
+    [string]$Token,
+    [string]$SiteId,
+    [object[]]$StatusRows,
+    [object[]]$IntelligenceRows,
+    [datetime]$StartDate
+  )
+  $folder = "$($Config.sharepoint.reportes_folder)/scorecards_$($StartDate.ToString("yyyy-MM"))"
+  Ensure-GraphFolder -Token $Token -SiteId $SiteId -FolderPath $folder
+  $cards = Get-ResponsibleScorecards -StatusRows $StatusRows -IntelligenceRows $IntelligenceRows
+  foreach ($card in @($cards)) {
+    $html = Convert-ScorecardToHtml -Card $card -PeriodLabel $StartDate.ToString("yyyy-MM")
+    $safeName = (($card.to -join "_") -replace "[^a-zA-Z0-9_.-]", "_")
+    Write-TextFileToGraph -Token $Token -SiteId $SiteId -FilePath "$folder/scorecard_$safeName.html" -Text $html -ContentType "text/html; charset=utf-8"
+    try {
+      Send-GraphMail `
+        -Token $Token `
+        -Sender $Config.mail.sender `
+        -To @($card.to) `
+        -Cc @($Config.mail.felix) `
+        -Subject "Calificacion mensual MAYU - $($StartDate.ToString("yyyy-MM")) - $($card.score)/100" `
+        -HtmlBody $html
+    } catch {
+      Write-Warning "No se pudo enviar scorecard mensual a $($card.to -join ', '). $($_.Exception.Message)"
+    }
+  }
+  return $cards
 }
 
 function Get-SentAlertKeys {
@@ -486,7 +1011,7 @@ function Invoke-OpenAiText {
     $body = @{
       model = $model
       input = $Prompt
-      max_output_tokens = 900
+      max_output_tokens = 1800
     } | ConvertTo-Json -Depth 10
 
     $response = Invoke-RestMethod `
@@ -538,6 +1063,8 @@ function Get-StatusRows {
       tipo = $occ.Tipo
       reunion = $occ.Nombre
       responsable = [string]$occ.Meeting.responsable
+      to = @($occ.Meeting.to)
+      cc = @($occ.Meeting.cc)
       estado = $(if ($hasEvidence) { "CUMPLIDA" } else { "PENDIENTE" })
       alerta = $(if ($hasAlert) { "SI" } else { "NO" })
     }
@@ -557,12 +1084,13 @@ function Convert-RowsToHtmlTable {
 }
 
 function New-ReportHtml {
-  param([string]$Title, [object[]]$Rows, [string]$AiSummary)
+  param([string]$Title, [object[]]$Rows, [string]$AiSummary, [object[]]$IntelligenceRows = @())
   $total = @($Rows).Count
   $done = @($Rows | Where-Object { $_.estado -eq "CUMPLIDA" }).Count
   $pending = $total - $done
   $rate = if ($total -gt 0) { [Math]::Round(($done / $total) * 100, 0) } else { 0 }
   $summary = if ($AiSummary) { "<pre style='white-space:pre-wrap;font-family:Arial,sans-serif;background:#f7f7f7;padding:12px;border:1px solid #ddd;'>$AiSummary</pre>" } else { "<p>No se genero resumen IA; se informa solo el control operativo.</p>" }
+  $intelligenceHtml = Convert-IntelligenceRowsToHtml -Rows $IntelligenceRows
   @"
 <html>
 <body style="font-family: Arial, sans-serif; font-size: 14px; color: #222; max-width: 900px;">
@@ -570,6 +1098,8 @@ function New-ReportHtml {
   <p><strong>Cumplimiento:</strong> $done de $total ($rate%). <strong>Pendientes:</strong> $pending.</p>
   <h3>Lectura inteligente</h3>
   $summary
+  <h3>Compromisos, bloqueos y continuidad</h3>
+  $intelligenceHtml
   <h3>Detalle fiscalizado</h3>
   $(Convert-RowsToHtmlTable -Rows $Rows)
   <p style="font-size:12px;color:#777;margin-top:24px;">Generado por el fiscalizador de reuniones MAYU.</p>
@@ -585,25 +1115,33 @@ function Send-ControlReport {
     [string]$SiteId,
     [string]$Title,
     [string]$FileName,
-    [object[]]$Rows
+    [object[]]$Rows,
+    [object[]]$IntelligenceRows = @()
   )
 
   $jsonRows = $Rows | ConvertTo-Json -Depth 10
+  $jsonIntelligenceRows = @($IntelligenceRows) | ConvertTo-Json -Depth 20
   Write-Output "Reporte: filas fiscalizadas $(@($Rows).Count)."
+  Write-Output "Reporte: seguimientos inteligentes $(@($IntelligenceRows).Count)."
   $prompt = @"
-Eres el fiscalizador de reuniones de MAYU. Tu tarea es escribir un resumen ejecutivo breve para Felix Escudero, GG.
+Eres el Agente de Continuidad Operacional de MAYU. Tu tarea es escribir un resumen ejecutivo breve para Felix Escudero, GG.
 No inventes reuniones ni personas. Lee estos datos y resume:
 - que se cumplio,
 - que no se cumplio,
 - donde hubo alertas,
+- que compromisos se cumplieron o quedaron pendientes,
+- que bloqueos requieren intervencion,
 - que seguimiento conviene hacer esta semana.
 
-Datos:
+Control documental:
 $jsonRows
+
+Seguimiento de compromisos y bloqueos:
+$jsonIntelligenceRows
 "@
   Write-Output "Reporte: generando lectura inteligente."
   $ai = Invoke-OpenAiText -Prompt $prompt
-  $html = New-ReportHtml -Title $Title -Rows $Rows -AiSummary $ai
+  $html = New-ReportHtml -Title $Title -Rows $Rows -AiSummary $ai -IntelligenceRows $IntelligenceRows
 
   Write-Output "Reporte: enviando correo a $($Config.mail.felix)."
   Send-GraphMail `
@@ -722,9 +1260,13 @@ function Invoke-WeeklyReport {
   $evidence += Get-FolderItemsFlatSafe -Token $Token -SiteId $SiteId -FolderPath $Config.sharepoint.minutas_archivadas
   $evidence += Get-FolderItemsFlatSafe -Token $Token -SiteId $SiteId -FolderPath $Config.sharepoint.reportes_folder
   $alertItems = Get-FolderItemsFlatSafe -Token $Token -SiteId $SiteId -FolderPath $Config.sharepoint.alertas_enviadas_folder
+  $intelligenceItems = Get-FolderItemsFlatSafe -Token $Token -SiteId $SiteId -FolderPath (Get-IntelligenceFolder -Config $Config)
+  $occurrences = Get-ExpectedOccurrences -Config $Config -StartDate $start -EndDate $end
   $rows = Get-StatusRows -Config $Config -EvidenceItems $evidence -AlertItems $alertItems -StartDate $start -EndDate $end
+  $intelligenceRows = Get-MeetingIntelligenceRows -Config $Config -Token $Token -SiteId $SiteId -Occurrences $occurrences -EvidenceItems $evidence -ExistingIntelligenceItems $intelligenceItems
   Write-Output "Reporte semanal: filas calculadas $(@($rows).Count)."
-  Send-ControlReport -Config $Config -Token $Token -SiteId $SiteId -Title "Reporte semanal reuniones MAYU - $($start.ToString("yyyy-MM-dd")) a $($end.ToString("yyyy-MM-dd"))" -FileName "reporte_semanal_$($end.ToString("yyyy-MM-dd")).html" -Rows $rows
+  Send-ControlReport -Config $Config -Token $Token -SiteId $SiteId -Title "Reporte semanal reuniones MAYU - $($start.ToString("yyyy-MM-dd")) a $($end.ToString("yyyy-MM-dd"))" -FileName "reporte_semanal_$($end.ToString("yyyy-MM-dd")).html" -Rows $rows -IntelligenceRows $intelligenceRows
+  Send-ResponsibleIntelligenceReports -Config $Config -Token $Token -Title "Seguimiento semanal compromisos MAYU - $($start.ToString("yyyy-MM-dd")) a $($end.ToString("yyyy-MM-dd"))" -Rows $intelligenceRows
   Write-Output "Reporte semanal enviado."
 }
 
@@ -742,8 +1284,13 @@ function Invoke-MonthlyReport {
   $evidence += Get-FolderItemsRecursive -Token $Token -SiteId $SiteId -FolderPath $Config.sharepoint.minutas_entrada
   $evidence += Get-FolderItemsRecursive -Token $Token -SiteId $SiteId -FolderPath $Config.sharepoint.minutas_archivadas
   $alertItems = Get-FolderItemsRecursive -Token $Token -SiteId $SiteId -FolderPath $Config.sharepoint.alertas_enviadas_folder
+  $intelligenceItems = Get-FolderItemsRecursive -Token $Token -SiteId $SiteId -FolderPath (Get-IntelligenceFolder -Config $Config)
+  $occurrences = Get-ExpectedOccurrences -Config $Config -StartDate $start -EndDate $end
   $rows = Get-StatusRows -Config $Config -EvidenceItems $evidence -AlertItems $alertItems -StartDate $start -EndDate $end
-  Send-ControlReport -Config $Config -Token $Token -SiteId $SiteId -Title "Cierre mensual reuniones MAYU - $($start.ToString("yyyy-MM"))" -FileName "reporte_mensual_$($start.ToString("yyyy-MM")).html" -Rows $rows
+  $intelligenceRows = Get-MeetingIntelligenceRows -Config $Config -Token $Token -SiteId $SiteId -Occurrences $occurrences -EvidenceItems $evidence -ExistingIntelligenceItems $intelligenceItems
+  Send-ControlReport -Config $Config -Token $Token -SiteId $SiteId -Title "Cierre mensual reuniones MAYU - $($start.ToString("yyyy-MM"))" -FileName "reporte_mensual_$($start.ToString("yyyy-MM")).html" -Rows $rows -IntelligenceRows $intelligenceRows
+  $scorecards = Send-MonthlyScorecards -Config $Config -Token $Token -SiteId $SiteId -StatusRows $rows -IntelligenceRows $intelligenceRows -StartDate $start
+  Write-Output "Scorecards mensuales enviados: $(@($scorecards).Count)."
   Write-Output "Reporte mensual enviado."
 }
 
@@ -757,6 +1304,7 @@ Write-Output "Fiscalizador MAYU iniciado. Modo=$Mode Tipo=$Tipo Fecha=$Date Hora
 
 Ensure-GraphFolder -Token $token -SiteId $siteId -FolderPath $config.sharepoint.alertas_enviadas_folder
 Ensure-GraphFolder -Token $token -SiteId $siteId -FolderPath $config.sharepoint.evaluaciones_folder
+Ensure-GraphFolder -Token $token -SiteId $siteId -FolderPath (Get-IntelligenceFolder -Config $config)
 Ensure-GraphFolder -Token $token -SiteId $siteId -FolderPath $config.sharepoint.reportes_folder
 
 if ($Mode -eq "post_reunion") {
