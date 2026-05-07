@@ -1,0 +1,116 @@
+name: Run Fiscalizador MAYU
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_mode:
+        description: "Modo a ejecutar"
+        type: choice
+        required: true
+        default: "test"
+        options:
+          - test
+          - weekly_report
+          - manual_due_sweep
+          - monthly_report
+      lookback_days:
+        description: "Dias hacia atras para manual_due_sweep"
+        required: false
+        default: "7"
+  schedule:
+    # Lunes AM Chile: reporte semanal.
+    - cron: "0 12 * * 1"
+    # Lunes a viernes, mediodia/tarde Chile: barridos de alertas vencidas.
+    - cron: "0 15 * * 1-5"
+    - cron: "30 21 * * 1-5"
+    # Dias posibles de cierre de mes; el runtime solo envia si efectivamente es ultimo dia.
+    - cron: "30 22 28-31 * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mayu-fiscalizador-direct
+  cancel-in-progress: false
+
+jobs:
+  run:
+    name: Run fiscalizador reuniones
+    runs-on: ubuntu-latest
+    env:
+      MayuTenantId: ${{ vars.MAYU_GRAPH_TENANT_ID }}
+      MayuClientId: ${{ vars.MAYU_GRAPH_CLIENT_ID }}
+      MayuClientSecret: ${{ secrets.MAYU_GRAPH_CLIENT_SECRET }}
+      MayuOpenAiApiKey: ${{ secrets.MAYU_OPENAI_API_KEY }}
+      MayuOpenAiModel: ${{ vars.MAYU_OPENAI_MODEL }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve run mode
+        id: resolve
+        shell: pwsh
+        run: |
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            $mode = "${{ inputs.run_mode }}"
+            $lookbackDays = "${{ inputs.lookback_days }}"
+          } else {
+            $schedule = "${{ github.event.schedule }}"
+            switch ($schedule) {
+              "0 12 * * 1" {
+                $mode = "weekly_report"
+                $lookbackDays = "7"
+              }
+              "0 15 * * 1-5" {
+                $mode = "manual_due_sweep"
+                $lookbackDays = "7"
+              }
+              "30 21 * * 1-5" {
+                $mode = "manual_due_sweep"
+                $lookbackDays = "7"
+              }
+              "30 22 28-31 * *" {
+                $mode = "monthly_report"
+                $lookbackDays = "7"
+              }
+              default {
+                throw "Schedule no reconocido: $schedule"
+              }
+            }
+          }
+
+          if ([string]::IsNullOrWhiteSpace($lookbackDays)) {
+            $lookbackDays = "7"
+          }
+
+          "run_mode=$mode" >> $env:GITHUB_OUTPUT
+          "lookback_days=$lookbackDays" >> $env:GITHUB_OUTPUT
+          Write-Output "Modo resuelto: $mode / LookbackDays=$lookbackDays"
+
+      - name: Run fiscalizador
+        shell: pwsh
+        run: |
+          $required = @(
+            "MayuTenantId",
+            "MayuClientId",
+            "MayuClientSecret",
+            "MayuOpenAiApiKey",
+            "MayuOpenAiModel"
+          )
+          foreach ($name in $required) {
+            if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) {
+              throw "Falta variable o secret requerido: $name"
+            }
+          }
+
+          $configPath = Join-Path $pwd "config/fiscalizador_config.json"
+          $env:MayuFiscalizadorConfigJson = Get-Content -Raw -Path $configPath
+          if ([string]::IsNullOrWhiteSpace($env:TEMP) -and -not [string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) {
+            $env:TEMP = $env:RUNNER_TEMP
+          }
+          $lookbackDays = [int]"${{ steps.resolve.outputs.lookback_days }}"
+
+          & ./runtime/FiscalizadorReunionesMAYU.core.ps1 `
+            -Mode "${{ steps.resolve.outputs.run_mode }}" `
+            -LookbackDays $lookbackDays
