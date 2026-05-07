@@ -19,18 +19,19 @@ if ($status) {
   git commit -m "Update MAYU agents deployment pipeline"
 }
 
-$remote = git remote get-url origin 2>$null
-if ($LASTEXITCODE -ne 0) {
+$remotes = @(git remote)
+if ($remotes -notcontains "origin") {
   git remote add origin $RepoUrl
-} elseif ($remote -ne $RepoUrl) {
+} else {
+  $remote = git remote get-url origin
+  if ($remote -ne $RepoUrl) {
   git remote set-url origin $RepoUrl
+  }
 }
 
-Write-Host "Sincronizando con main remoto..." -ForegroundColor Cyan
-git pull origin main --rebase --allow-unrelated-histories
-
 Write-Host "Subiendo a GitHub..." -ForegroundColor Cyan
-git push -u origin main
+Write-Host "Nota: como el repo remoto fue creado con README inicial, se reemplaza por este paquete local." -ForegroundColor Yellow
+git push -u origin main --force-with-lease
 
 Write-Host ""
 Write-Host "Push completado." -ForegroundColor Green
