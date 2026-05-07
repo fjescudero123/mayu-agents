@@ -713,10 +713,14 @@ function Send-ResponsibleIntelligenceReports {
     $recipientRows = @($groups[$key])
     $to = @($key -split ";" | Where-Object { $_ })
     $cc = @($Config.mail.felix)
+    $meetingNames = @($recipientRows | ForEach-Object { [string]$_.reunion } | Where-Object { $_ } | Select-Object -Unique)
+    $meetingsLabel = if (@($meetingNames).Count -gt 0) { ($meetingNames -join ", ") } else { "sin reunion identificada" }
+    $subject = "$Title [$meetingsLabel]"
     $html = @"
 <html>
 <body style="font-family: Arial, sans-serif; font-size: 14px; color: #222; max-width: 850px;">
   <h2>$Title</h2>
+  <p><strong>Reuniones:</strong> $meetingsLabel</p>
   <p>Resumen de compromisos, bloqueos y continuidad de las reuniones bajo tu responsabilidad.</p>
   $(Convert-IntelligenceRowsToHtml -Rows $recipientRows)
   <p style="font-size:12px;color:#777;margin-top:24px;">Generado por el Agente de Continuidad Operacional MAYU.</p>
@@ -729,7 +733,7 @@ function Send-ResponsibleIntelligenceReports {
         -Sender $Config.mail.sender `
         -To $to `
         -Cc $cc `
-        -Subject $Title `
+        -Subject $subject `
         -HtmlBody $html
     } catch {
       Write-Warning "No se pudo enviar seguimiento a responsables $key. $($_.Exception.Message)"
@@ -891,13 +895,15 @@ function Send-MonthlyScorecards {
     $html = Convert-ScorecardToHtml -Card $card -PeriodLabel $StartDate.ToString("yyyy-MM")
     $safeName = (($card.to -join "_") -replace "[^a-zA-Z0-9_.-]", "_")
     Write-TextFileToGraph -Token $Token -SiteId $SiteId -FilePath "$folder/scorecard_$safeName.html" -Text $html -ContentType "text/html; charset=utf-8"
+    $meetingNames = @($card.reuniones | ForEach-Object { [string]$_.reunion } | Where-Object { $_ } | Select-Object -Unique)
+    $meetingsLabel = if (@($meetingNames).Count -gt 0) { ($meetingNames -join ", ") } else { "sin reunion identificada" }
     try {
       Send-GraphMail `
         -Token $Token `
         -Sender $Config.mail.sender `
         -To @($card.to) `
         -Cc @($Config.mail.felix) `
-        -Subject "Calificacion mensual MAYU - $($StartDate.ToString("yyyy-MM")) - $($card.score)/100" `
+        -Subject "Calificacion mensual MAYU [$meetingsLabel] - $($StartDate.ToString("yyyy-MM")) - $($card.score)/100" `
         -HtmlBody $html
     } catch {
       Write-Warning "No se pudo enviar scorecard mensual a $($card.to -join ', '). $($_.Exception.Message)"
