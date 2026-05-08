@@ -20,10 +20,9 @@ on:
         type: boolean
         required: false
         default: true
-  # Schedule deshabilitado hasta validar daily_pulse en runs manuales.
-  # Reactivar cuando el primer pulso este revisado y aprobado.
-  # schedule:
-  #   - cron: "0 12 * * 1-5"  # Lunes a viernes AM Chile aprox.
+  schedule:
+    # Lunes a viernes 12:00 UTC (~08:00 Chile horario actual). Pulso gerencial diario.
+    - cron: "0 12 * * 1-5"
 
 permissions:
   contents: read
