@@ -255,7 +255,7 @@ function Get-FirestoreData {
     $collectionName = [string]$p.Value
     try {
       $data[$logical] = @(Get-FirestoreCollection -Config $Config -Token $idToken -CollectionName $collectionName)
-      Write-Output "Firestore: $collectionName -> $(@($data[$logical]).Count) docs."
+      Write-Host "Firestore: $collectionName -> $(@($data[$logical]).Count) docs."
     } catch {
       Write-Warning "No se pudo leer Firestore '$collectionName'. $($_.Exception.Message)"
       $data[$logical] = @()
@@ -331,6 +331,37 @@ function Add-Issue {
   [void]$List.Add($Issue)
 }
 
+function Get-IssueKey {
+  param([object]$Issue)
+  "$($Issue.severity)|$($Issue.area)|$($Issue.title)|$($Issue.ref)"
+}
+
+function Select-UniqueIssues {
+  param([object[]]$Issues)
+  $seen = New-Object System.Collections.Generic.HashSet[string]
+  $out = @()
+  foreach ($issue in @($Issues)) {
+    if ($null -eq $issue) { continue }
+    $key = Get-IssueKey -Issue $issue
+    if ($seen.Add($key)) { $out += $issue }
+  }
+  $out
+}
+
+function Test-OperationalMatProject {
+  param([object]$MatProject, [object[]]$Units, [object[]]$Packs)
+  if ($null -eq $MatProject) { return $false }
+  if (@($Units | Where-Object { $_.matProjectId -eq $MatProject.id }).Count -gt 0) { return $true }
+  if (@($Packs | Where-Object { $_.matProjectId -eq $MatProject.id }).Count -gt 0) { return $true }
+  if ((Get-Number $MatProject.totalPods) -gt 0) { return $true }
+  if ($MatProject.podsPorTip) {
+    foreach ($prop in $MatProject.podsPorTip.PSObject.Properties) {
+      if ((Get-Number $prop.Value) -gt 0) { return $true }
+    }
+  }
+  $false
+}
+
 function Get-BibliaProjectRows {
   param([object]$Config, [object[]]$ChkProjects)
   $rows = @()
@@ -374,20 +405,11 @@ function Get-OperationalIssues {
   $units = @($Data.fab_units)
   $packs = @($Data.fab_packs)
 
-  $matByCrm = @{}
   foreach ($mp in $matProjects) {
-    if ($mp.crmId) {
-      if (-not $matByCrm.ContainsKey([string]$mp.crmId)) { $matByCrm[[string]$mp.crmId] = @() }
-      $matByCrm[[string]$mp.crmId] += $mp
+    $isOperational = Test-OperationalMatProject -MatProject $mp -Units $units -Packs $packs
+    if (-not $isOperational) {
+      continue
     }
-  }
-  foreach ($crm in @($crmProjects | Where-Object { $_.estado_comercial -eq "Negocio cerrado" })) {
-    if (-not $crm.id -or -not $matByCrm.ContainsKey([string]$crm.id)) {
-      Add-Issue $issues (New-Issue -Severity "rojo" -Area "Comercial/Materiales" -Title "Negocio cerrado sin traspaso operativo" -Detail "$($crm.nombre) no tiene mat_project vinculado." -Owner "Felix Escudero Vargas / Carlos" -Action "Crear o vincular mat_project desde Materiales." -Ref $crm.id)
-    }
-  }
-
-  foreach ($mp in $matProjects) {
     if (-not $mp.crmId) {
       Add-Issue $issues (New-Issue -Severity "rojo" -Area "Traspaso Control-Operacion" -Title "mat_project sin CRM" -Detail "$($mp.name) no tiene crmId; Finanzas no puede cruzar costos por proyecto." -Owner "Carlos / Valentina" -Action "Backfill CRM desde Materiales." -Ref $mp.id)
     }
@@ -469,7 +491,20 @@ function Get-PackIssues {
 function Get-AbastecimientoIssues {
   param([object]$Config, [object]$Data)
   $issues = [System.Collections.ArrayList]::new()
+  $skuDemand = @{}
+  foreach ($pack in @($Data.fab_packs | Where-Object { @("planificado","armado") -contains [string]$_.estado })) {
+    foreach ($it in @($pack.items | Where-Object { $_.skuCode })) {
+      $code = [string]$it.skuCode
+      $qty = Get-Number $it.qtyArmada
+      if ($qty -eq 0) { $qty = Get-Number $it.qtyPlanificada }
+      if (-not $skuDemand.ContainsKey($code)) { $skuDemand[$code] = 0.0 }
+      $skuDemand[$code] += $qty
+    }
+  }
   foreach ($mp in @($Data.mat_projects)) {
+    if (-not (Test-OperationalMatProject -MatProject $mp -Units @($Data.fab_units) -Packs @($Data.fab_packs))) {
+      continue
+    }
     $sinSku = @($mp.items | Where-Object { -not $_.skuCode -and ([string]$_.status) -ne "inactivo" })
     if ($sinSku.Count -gt 0) {
       Add-Issue $issues (New-Issue -Severity "rojo" -Area "Abastecimiento" -Title "BOM con items sin SKU" -Detail "$($mp.name) tiene $($sinSku.Count) item(s) BOM sin SKU." -Owner "Carlos" -Action "Completar cotizacion/link SKU." -Ref $mp.id)
@@ -479,8 +514,8 @@ function Get-AbastecimientoIssues {
     $stock = Get-Number $sku.stock
     $cost = Get-Number $sku.costoPromedio
     $code = if ($sku.code) { $sku.code } else { $sku.id }
-    if ($stock -le [double]$Config.thresholds.stock_critical_qty) {
-      Add-Issue $issues (New-Issue -Severity "amarillo" -Area "Bodega" -Title "SKU sin stock" -Detail "$code - $($sku.desc) tiene stock $stock." -Owner "Mauricio" -Action "Revisar demanda futura y OCs." -Ref $code)
+    if ($stock -le [double]$Config.thresholds.stock_critical_qty -and $skuDemand.ContainsKey($code)) {
+      Add-Issue $issues (New-Issue -Severity "amarillo" -Area "Bodega" -Title "SKU demandado sin stock" -Detail "$code - $($sku.desc) tiene stock $stock y demanda en packs por $([Math]::Round($skuDemand[$code], 2))." -Owner "Mauricio" -Action "Recepcionar OC o resolver alternativa antes de armar/entregar pack." -Ref $code)
     }
     if ($stock -gt 0 -and $cost -le 0) {
       Add-Issue $issues (New-Issue -Severity "rojo" -Area "Bodega/Finanzas" -Title "Inventario sin valorizacion" -Detail "$code tiene stock $stock y costo promedio 0." -Owner "Mauricio / Valentina" -Action "Valorizar desde Kardex." -Ref $code)
@@ -594,7 +629,7 @@ function Build-Pulse {
   $calIssues = @(Get-CalidadIssues -Config $Config -Data $Data -BibliaRows $bibliaRows)
 
   $max = [int]$Config.thresholds.max_items_per_section
-  $all = @($traspaso + $packIssues + $abastIssues + $finIssues + $comIssues + $calIssues)
+  $all = @(Select-UniqueIssues -Issues @($traspaso + $packIssues + $abastIssues + $finIssues + $comIssues + $calIssues))
   $rojos = @($all | Where-Object { $_.severity -eq "rojo" })
   $amarillos = @($all | Where-Object { $_.severity -eq "amarillo" })
   $infos = @($all | Where-Object { $_.severity -eq "info" })
