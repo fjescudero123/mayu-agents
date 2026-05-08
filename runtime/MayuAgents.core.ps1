@@ -416,41 +416,41 @@ function Get-OperationalIssues {
       continue
     }
     if (-not $mp.crmId) {
-      Add-Issue $issues (New-Issue -Severity "rojo" -Area "Traspaso Control-Operacion" -Title "mat_project sin CRM" -Detail "$($mp.name) no tiene crmId; Finanzas no puede cruzar costos por proyecto." -Owner "Carlos / Valentina" -Action "Backfill CRM desde Materiales." -Ref $mp.id)
+      Add-Issue $issues (New-Issue -Severity "rojo" -Area "Traspaso Control-Operacion" -Title "Proyecto operativo sin vinculo comercial" -Detail "$($mp.name) esta en operacion, pero no esta vinculado al negocio comercial. Finanzas no puede cruzar bien los costos por proyecto." -Owner "Carlos / Valentina" -Action "Vincular el proyecto operativo con su negocio comercial." -Ref $mp.id)
     }
     if (-not $mp.chkId) {
-      Add-Issue $issues (New-Issue -Severity "rojo" -Area "Traspaso Control-Operacion" -Title "mat_project sin Control Documental" -Detail "$($mp.name) no tiene chkId; no puede sincronizar la biblia del proyecto." -Owner "Carlos / Martin" -Action "Vincular chk_project en Materiales." -Ref $mp.id)
+      Add-Issue $issues (New-Issue -Severity "rojo" -Area "Traspaso Control-Operacion" -Title "Proyecto operativo sin biblia vinculada" -Detail "$($mp.name) esta en operacion, pero no esta conectado con Control Documental. No puede sincronizar la biblia del proyecto." -Owner "Carlos / Martin" -Action "Vincularlo al proyecto correcto en Control Documental." -Ref $mp.id)
       continue
     }
     $chk = @($chkProjects | Where-Object { $_.id -eq $mp.chkId } | Select-Object -First 1)
     if (-not $chk) {
-      Add-Issue $issues (New-Issue -Severity "rojo" -Area "Traspaso Control-Operacion" -Title "chkId apunta a proyecto inexistente" -Detail "$($mp.name) apunta a $($mp.chkId), pero no existe en chk_projects." -Owner "Carlos / Martin" -Action "Corregir vinculo chkId." -Ref $mp.id)
+      Add-Issue $issues (New-Issue -Severity "rojo" -Area "Traspaso Control-Operacion" -Title "Vinculo documental roto" -Detail "$($mp.name) esta conectado a un proyecto documental que ya no existe o no se encontro." -Owner "Carlos / Martin" -Action "Corregir el vinculo con Control Documental." -Ref $mp.id)
       continue
     }
     $bomVigente = Get-LatestApprovedBomVersion -ChkProject $chk
     if ($bomVigente -and $bomVigente -ne [string]$mp.bomVersionUsada) {
-      Add-Issue $issues (New-Issue -Severity "rojo" -Area "Control/Materiales" -Title "BOM aprobado no sincronizado" -Detail "$($mp.name): Control tiene BOM $bomVigente y Materiales usa '$($mp.bomVersionUsada)'." -Owner "Carlos" -Action "Sincronizar BOM desde Control Documental en Materiales." -Ref $mp.id)
+      Add-Issue $issues (New-Issue -Severity "rojo" -Area "Control/Materiales" -Title "BOM aprobado pendiente de traspaso" -Detail "$($mp.name): Control Documental tiene BOM $bomVigente y Materiales todavia usa '$($mp.bomVersionUsada)'." -Owner "Carlos" -Action "Sincronizar la BOM aprobada desde Control Documental." -Ref $mp.id)
     }
     $rec = @($recetas | Where-Object { $_.matProjectId -eq $mp.id -or $_.id -eq $mp.id } | Select-Object -First 1)
     if ($mp.bomVersionUsada -and $rec -and ([string]$rec.bomVersionSincronizada) -ne ([string]$mp.bomVersionUsada)) {
-      Add-Issue $issues (New-Issue -Severity "rojo" -Area "Materiales/Fabricacion" -Title "Receta desfasada del BOM" -Detail "$($mp.name): Materiales usa BOM $($mp.bomVersionUsada), Fabricacion sincronizo '$($rec.bomVersionSincronizada)'." -Owner "Carlos / Martin" -Action "Reaplicar BOM para regenerar receta de Fabricacion." -Ref $mp.id)
+      Add-Issue $issues (New-Issue -Severity "rojo" -Area "Materiales/Fabricacion" -Title "Fabricacion no alineada al BOM vigente" -Detail "$($mp.name): Materiales usa BOM $($mp.bomVersionUsada), pero Fabricacion quedo con '$($rec.bomVersionSincronizada)'." -Owner "Carlos / Martin" -Action "Alinear Fabricacion con la BOM vigente y regenerar packs si corresponde." -Ref $mp.id)
     }
     $unitsMp = @($units | Where-Object { $_.matProjectId -eq $mp.id })
     if ([string]$chk.status -eq "Aprobado para ejecucion" -or [string]$chk.status -eq "Aprobado para ejecución") {
       if (@($unitsMp).Count -eq 0) {
-        Add-Issue $issues (New-Issue -Severity "amarillo" -Area "Control/Fabricacion" -Title "Proyecto aprobado sin unidades de fabricacion" -Detail "$($mp.name) esta aprobado en Control, pero no tiene fab_units." -Owner "Martin / Felipe" -Action "Generar unidades desde Fabricacion si corresponde." -Ref $mp.id)
+        Add-Issue $issues (New-Issue -Severity "amarillo" -Area "Control/Fabricacion" -Title "Proyecto aprobado sin unidades creadas en fabrica" -Detail "$($mp.name) esta aprobado en Control, pero aun no tiene unidades creadas en Fabricacion." -Owner "Martin / Felipe" -Action "Crear las unidades de Fabricacion si el proyecto ya debe entrar a planta." -Ref $mp.id)
       }
     }
     $activeUnits = @($unitsMp | Where-Object { @("M00","M01","M02","M03","M04","M05","RF_FABRICA") -contains [string]$_.status })
     if (@($activeUnits).Count -gt 0) {
       $bib = @($BibliaRows | Where-Object { $_.id -eq $mp.chkId } | Select-Object -First 1)
       if ($bib -and $bib.estado -ne "verde") {
-        Add-Issue $issues (New-Issue -Severity "rojo" -Area "Control/Fabricacion" -Title "Produccion activa con biblia incompleta" -Detail "$($mp.name) tiene $(@($activeUnits).Count) unidad(es) activas y Biblia $($bib.estado)." -Owner "Martin / Carlos" -Action "Cerrar documentos criticos antes de seguir comprando/fabricando." -Ref $mp.id)
+        Add-Issue $issues (New-Issue -Severity "rojo" -Area "Control/Fabricacion" -Title "Produccion activa con documentacion incompleta" -Detail "$($mp.name) tiene $(@($activeUnits).Count) unidad(es) activas y la biblia del proyecto sigue en $($bib.estado)." -Owner "Martin / Carlos" -Action "Cerrar documentos criticos o definir formalmente como sigue la produccion." -Ref $mp.id)
       }
     }
     $packsMp = @($packs | Where-Object { $_.matProjectId -eq $mp.id })
     if (@($unitsMp).Count -gt 0 -and @($packsMp).Count -eq 0) {
-      Add-Issue $issues (New-Issue -Severity "amarillo" -Area "Fabricacion/Packs" -Title "Proyecto con unidades sin packs" -Detail "$($mp.name) tiene fab_units, pero no fab_packs." -Owner "Felipe / Mauricio" -Action "Generar packs por modulo desde Fabricacion." -Ref $mp.id)
+      Add-Issue $issues (New-Issue -Severity "amarillo" -Area "Fabricacion/Packs" -Title "Produccion sin packs generados" -Detail "$($mp.name) tiene unidades creadas, pero aun no tiene packs de materiales." -Owner "Felipe / Mauricio" -Action "Generar packs por modulo desde Fabricacion." -Ref $mp.id)
     }
   }
   @($issues)
@@ -466,7 +466,7 @@ function Get-PackIssues {
     $label = "$($pack.projectName) / $($pack.modulo) / $($pack.fecha)"
     $itemsSinSku = @($pack.items | Where-Object { -not $_.skuCode })
     if ($itemsSinSku.Count -gt 0 -or $pack.recetaIncompleta) {
-      Add-Issue $issues (New-Issue -Severity "rojo" -Area "Packs" -Title "Pack con items sin SKU" -Detail "$label tiene $($itemsSinSku.Count) item(s) sin SKU." -Owner "Carlos" -Action "Cotizar/linkear SKUs en Materiales o desde Bodega." -Ref $pack.id)
+      Add-Issue $issues (New-Issue -Severity "rojo" -Area "Packs" -Title "Pack no armable por productos sin definir" -Detail "$label tiene $($itemsSinSku.Count) producto(s) sin codigo de bodega." -Owner "Carlos" -Action "Completar codificacion y cotizacion antes de pedir armado a Bodega." -Ref $pack.id)
     }
     if ([string]$pack.estado -eq "planificado" -and -not $pack.compromisoEntregaBodega) {
       Add-Issue $issues (New-Issue -Severity "amarillo" -Area "Packs" -Title "Pack sin compromiso de Bodega" -Detail "$label esta planificado sin fecha comprometida por Bodega." -Owner "Mauricio" -Action "Asignar compromiso de entrega en Bodega." -Ref $pack.id)
@@ -478,7 +478,7 @@ function Get-PackIssues {
         if ($qty -eq 0) { $qty = Get-Number $it.qtyPlanificada }
         $stock = if ($sku) { Get-Number $sku.stock } else { 0 }
         if (-not $sku -or $stock -lt $qty) {
-          Add-Issue $issues (New-Issue -Severity "rojo" -Area "Packs" -Title "Pack armado con stock insuficiente" -Detail "$label requiere $qty de $($it.skuCode), stock $stock." -Owner "Mauricio" -Action "Ingresar stock/recepcionar OC antes de entregar." -Ref $pack.id)
+          Add-Issue $issues (New-Issue -Severity "rojo" -Area "Packs" -Title "Pack armado con stock insuficiente" -Detail "$label tiene productos con stock insuficiente para entregar." -Owner "Mauricio" -Action "Ingresar stock o recepcionar compra antes de entregar." -Ref $pack.id)
           break
         }
       }
@@ -497,13 +497,18 @@ function Get-AbastecimientoIssues {
   param([object]$Config, [object]$Data)
   $issues = [System.Collections.ArrayList]::new()
   $skuDemand = @{}
+  $skuDemandPacks = @{}
   foreach ($pack in @($Data.fab_packs | Where-Object { @("planificado","armado") -contains [string]$_.estado })) {
     foreach ($it in @($pack.items | Where-Object { $_.skuCode })) {
       $code = [string]$it.skuCode
       $qty = Get-Number $it.qtyArmada
       if ($qty -eq 0) { $qty = Get-Number $it.qtyPlanificada }
-      if (-not $skuDemand.ContainsKey($code)) { $skuDemand[$code] = 0.0 }
+      if (-not $skuDemand.ContainsKey($code)) {
+        $skuDemand[$code] = 0.0
+        $skuDemandPacks[$code] = [System.Collections.ArrayList]::new()
+      }
       $skuDemand[$code] += $qty
+      [void]$skuDemandPacks[$code].Add($pack)
     }
   }
   foreach ($mp in @($Data.mat_projects)) {
@@ -512,16 +517,34 @@ function Get-AbastecimientoIssues {
     }
     $sinSku = @($mp.items | Where-Object { -not $_.skuCode -and ([string]$_.status) -ne "inactivo" })
     if ($sinSku.Count -gt 0) {
-      Add-Issue $issues (New-Issue -Severity "rojo" -Area "Abastecimiento" -Title "BOM con items sin SKU" -Detail "$($mp.name) tiene $($sinSku.Count) item(s) BOM sin SKU." -Owner "Carlos" -Action "Completar cotizacion/link SKU." -Ref $mp.id)
+      Add-Issue $issues (New-Issue -Severity "rojo" -Area "Abastecimiento" -Title "BOM con productos sin codificar" -Detail "$($mp.name) tiene $($sinSku.Count) producto(s) de la BOM sin codigo de bodega." -Owner "Carlos" -Action "Completar codificacion y cotizacion para poder comprar y armar packs." -Ref $mp.id)
     }
   }
+  $stockGaps = @()
   foreach ($sku in @($Data.inv_catalogo | Where-Object { $_.activo -ne $false -and -not $_.aliasDe })) {
     $stock = Get-Number $sku.stock
     $cost = Get-Number $sku.costoPromedio
     $code = if ($sku.code) { $sku.code } else { $sku.id }
     if ($stock -le [double]$Config.thresholds.stock_critical_qty -and $skuDemand.ContainsKey($code)) {
-      Add-Issue $issues (New-Issue -Severity "amarillo" -Area "Bodega" -Title "SKU demandado sin stock" -Detail "$code - $($sku.desc) tiene stock $stock y demanda en packs por $([Math]::Round($skuDemand[$code], 2))." -Owner "Mauricio" -Action "Recepcionar OC o resolver alternativa antes de armar/entregar pack." -Ref $code)
+      $stockGaps += [pscustomobject]@{
+        code = $code
+        demand = $skuDemand[$code]
+        packs = @($skuDemandPacks[$code])
+      }
     }
+  }
+  if ($stockGaps.Count -gt 0) {
+    $packRefs = New-Object System.Collections.Generic.HashSet[string]
+    $projectRefs = New-Object System.Collections.Generic.HashSet[string]
+    foreach ($gap in $stockGaps) {
+      foreach ($pack in @($gap.packs)) {
+        if ($pack.id) { [void]$packRefs.Add([string]$pack.id) }
+        if ($pack.projectName) { [void]$projectRefs.Add([string]$pack.projectName) }
+      }
+    }
+    $projectList = @($projectRefs.GetEnumerator() | Select-Object -First 3)
+    $projectText = if ($projectList.Count -gt 0) { " Proyectos impactados: $($projectList -join '; ')." } else { "" }
+    Add-Issue $issues (New-Issue -Severity "amarillo" -Area "Bodega" -Title "Productos requeridos sin stock suficiente" -Detail "Hay $($stockGaps.Count) producto(s) requeridos por packs proximos con stock bajo o cero. Impacta $($packRefs.Count) pack(s).$projectText" -Owner "Mauricio / Carlos" -Action "Definir si se recepciona compra, se reemplaza material o se reprograma entrega." -Ref "stock_packs")
   }
   $sinValor = @($Data.inv_catalogo | Where-Object {
     $_.activo -ne $false -and
@@ -530,17 +553,11 @@ function Get-AbastecimientoIssues {
     (Get-Number $_.costoPromedio) -le 0
   })
   if ($sinValor.Count -gt 0) {
-    $maxExamples = [int]$Config.thresholds.max_inventory_examples
-    if ($maxExamples -le 0) { $maxExamples = 8 }
-    $examples = @($sinValor | Select-Object -First $maxExamples | ForEach-Object {
-      $code = if ($_.code) { $_.code } else { $_.id }
-      "$code stock $(Get-Number $_.stock)"
-    })
-    Add-Issue $issues (New-Issue -Severity "rojo" -Area "Bodega/Finanzas" -Title "Inventario con valorizacion incompleta" -Detail "$($sinValor.Count) SKU(s) tienen stock > 0 y costo promedio 0. Ejemplos: $($examples -join '; ')." -Owner "Mauricio / Valentina" -Action "Valorizar desde Kardex antes de usar costos por proyecto/directorio." -Ref "inv_catalogo")
+    Add-Issue $issues (New-Issue -Severity "rojo" -Area "Bodega/Finanzas" -Title "Inventario con costos incompletos" -Detail "$($sinValor.Count) producto(s) con stock tienen costo registrado en cero. Esto distorsiona costos por proyecto y reportes de directorio." -Owner "Mauricio / Valentina" -Action "Valorizar inventario desde Kardex." -Ref "inv_catalogo")
   }
   foreach ($oc in @($Data.mat_ordenes)) {
     if (-not $oc.precioUnit -or [double]$oc.precioUnit -le 0) {
-      Add-Issue $issues (New-Issue -Severity "amarillo" -Area "Compras" -Title "OC sin precio unitario" -Detail "$($oc.id) / $($oc.itemDesc) no tiene precioUnit valido." -Owner "Carlos / Valentina" -Action "Completar precio para costo comprometido." -Ref $oc.id)
+      Add-Issue $issues (New-Issue -Severity "amarillo" -Area "Compras" -Title "Orden de compra sin precio" -Detail "$($oc.id) / $($oc.itemDesc) no tiene precio unitario valido." -Owner "Carlos / Valentina" -Action "Completar precio para medir costo comprometido." -Ref $oc.id)
     }
   }
   @($issues)
@@ -680,8 +697,42 @@ function Get-DecisionGroupKey {
   $ref
 }
 
+function Get-EntityDisplayName {
+  param([object]$Entity, [string]$Fallback)
+  if ($null -eq $Entity) { return $Fallback }
+  foreach ($prop in @("name", "nombre", "projectName", "title", "titulo", "client", "cliente")) {
+    $property = $Entity.PSObject.Properties[$prop]
+    if ($property -and -not [string]::IsNullOrWhiteSpace([string]$property.Value)) {
+      return [string]$property.Value
+    }
+  }
+  $Fallback
+}
+
+function Get-DecisionLabels {
+  param([object]$Data)
+  $labels = @{}
+  if ($Data) {
+    foreach ($mp in @($Data.mat_projects)) {
+      if ($mp.id) { $labels[[string]$mp.id] = Get-EntityDisplayName -Entity $mp -Fallback ([string]$mp.id) }
+    }
+    foreach ($chk in @($Data.chk_projects)) {
+      if ($chk.id) { $labels[[string]$chk.id] = Get-EntityDisplayName -Entity $chk -Fallback ([string]$chk.id) }
+    }
+    foreach ($crm in @($Data.crm_projects)) {
+      if ($crm.id) { $labels[[string]$crm.id] = Get-EntityDisplayName -Entity $crm -Fallback ([string]$crm.id) }
+    }
+  }
+  $labels["inv_catalogo"] = "Inventario"
+  $labels["stock_packs"] = "Stock para packs proximos"
+  $labels["fin_facturas_ap"] = "Facturas por pagar"
+  $labels["fin_facturas_ar"] = "Facturas por cobrar"
+  $labels
+}
+
 function Select-DecisionItems {
-  param([object[]]$Issues, [int]$Max = 8)
+  param([object[]]$Issues, [object]$Data = $null, [int]$Max = 8)
+  $labels = Get-DecisionLabels -Data $Data
   $groups = [ordered]@{}
   foreach ($issue in @($Issues)) {
     if ($null -eq $issue) { continue }
@@ -694,10 +745,11 @@ function Select-DecisionItems {
     $list = @($groups[$key])
     $first = $list[0]
     $titles = @($list | ForEach-Object { $_.title } | Select-Object -Unique)
+    $label = if ($labels.ContainsKey($key)) { $labels[$key] } else { $key }
     $text = if ($list.Count -gt 1) {
-      "$($list.Count) alertas en ${key}: $($titles -join '; '). Accion: $($first.action)"
+      "${label}: $($list.Count) temas abiertos ($($titles -join '; ')). $($first.action)"
     } else {
-      "$($first.title): $($first.action)"
+      "${label}: $($first.title). $($first.action)"
     }
     $items += [pscustomobject]@{ text = $text; owner = $first.owner; ref = $first.ref }
     if ($items.Count -ge $Max) { break }
@@ -720,7 +772,7 @@ function Build-Pulse {
   $rojos = @($all | Where-Object { $_.severity -eq "rojo" })
   $amarillos = @($all | Where-Object { $_.severity -eq "amarillo" })
   $infos = @($all | Where-Object { $_.severity -eq "info" })
-  $decisiones = @(Select-DecisionItems -Issues $rojos -Max 8)
+  $decisiones = @(Select-DecisionItems -Issues $rojos -Data $Data -Max 8)
   [pscustomobject]@{
     generatedAt = $Now.ToString("o")
     date = $Now.ToString("yyyy-MM-dd")
@@ -735,7 +787,7 @@ function Build-Pulse {
     decisionesFelixHoy = @($decisiones)
     sections = [pscustomobject]@{
       bibliaProyecto = Limit-Issues -Issues @($bibliaRows | Where-Object { $_.estado -ne "verde" } | ForEach-Object {
-        New-Issue -Severity $_.estado -Area "Biblia del Proyecto" -Title "$($_.name) - Biblia $($_.estado)" -Detail "$($_.rojos) rojos / $($_.amarillos) amarillos." -Owner "Martin / Carlos / Valentina" -Action "Cerrar requisitos pendientes en Control Documental." -Ref $_.id
+        New-Issue -Severity $_.estado -Area "Biblia del Proyecto" -Title "$($_.name) - Documentacion $($_.estado)" -Detail "$($_.rojos) requisito(s) criticos / $($_.amarillos) requisito(s) pendientes." -Owner "Martin / Carlos / Valentina" -Action "Cerrar requisitos pendientes en Control Documental." -Ref $_.id
       }) -Max $max
       traspasoControlOperacion = Limit-Issues -Issues $traspaso -Max $max
       packs = Limit-Issues -Issues $packIssues -Max $max
