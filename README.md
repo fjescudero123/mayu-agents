@@ -15,6 +15,19 @@ El fiscalizador de reuniones corre directamente en GitHub Actions. Ya no necesit
 
 El workflow antiguo `.github/workflows/deploy-mayu-agents.yml` queda como referencia legacy de Azure Automation.
 
+## Nueva arquitectura de agentes operacionales
+
+Ademas del fiscalizador, este repo ahora incluye el esqueleto separado de MAYU Agents para operacion ERP:
+
+- Workflow directo: `.github/workflows/run-mayu-agents.yml`
+- Runtime operativo: `runtime/MayuAgents.core.ps1`
+- Config no sensible: `config/mayu_agents_config.json`
+- Documento de arquitectura: `docs/ARCHITECTURE_MAYU_AGENTS.md`
+
+El primer bloque implementado es `daily_pulse`: Pulso Gerencial Diario. Lee Firestore por REST, cruza Control Documental, CRM, Materiales, Bodega, Fabricacion y Finanzas, guarda HTML/JSON en SharePoint y opcionalmente envia correo a Felix.
+
+La convivencia con el fiscalizador es intencional: no comparte workflow ni config, solo el patron tecnico de GitHub Actions + PowerShell + Graph + config JSON.
+
 ## Modelo operativo
 
 1. Codex edita `runtime/FiscalizadorReunionesMAYU.core.ps1` o `config/fiscalizador_config.json`.
@@ -38,6 +51,7 @@ No se requiere OIDC, Azure login ni environment con aprobacion para la ejecucion
 - `MAYU_GRAPH_TENANT_ID`
 - `MAYU_GRAPH_CLIENT_ID`
 - `MAYU_OPENAI_MODEL`
+- `MAYU_FIREBASE_API_KEY` (para MAYU Agents operacionales)
 
 ## Secrets de GitHub requeridos
 

@@ -1,0 +1,86 @@
+{
+  "timezone": "America/Santiago",
+  "firebase": {
+    "project_id": "crm---mayu",
+    "api_key_env": "MAYU_FIREBASE_API_KEY",
+    "fallback_api_key_env": "MayuFirebaseApiKey",
+    "database": "(default)"
+  },
+  "sharepoint": {
+    "host": "inmobiliariamayu.sharepoint.com",
+    "base_folder": "agentes_mayu",
+    "pulso_folder": "agentes_mayu/pulso_gerencial",
+    "biblia_folder": "agentes_mayu/biblia_proyecto",
+    "traspaso_folder": "agentes_mayu/traspaso_control_operacion",
+    "minutas_seguimiento_folder": "minutas_archivadas/seguimiento_compromisos",
+    "links": {
+      "hub": "https://mayu-hub.netlify.app/",
+      "control": "https://control-mayu.netlify.app/",
+      "materiales": "https://materiales-mayu.netlify.app/",
+      "bodega": "https://bodega-mayu.netlify.app/",
+      "fabricacion": "https://mayu-fabricacion.netlify.app/",
+      "finanzas": "https://mayu-finanzas.netlify.app/",
+      "crm": "https://crm-mayu.netlify.app/"
+    }
+  },
+  "mail": {
+    "sender": "notificaciones@imayu.cl",
+    "felix": "fjescudero@imayu.cl",
+    "valentina": "vescudero@imayu.cl"
+  },
+  "collections": {
+    "chk_projects": "chk_projects",
+    "crm_projects": "projects",
+    "crm_plan": "plan",
+    "crm_billing": "billing",
+    "mat_projects": "mat_projects",
+    "mat_ordenes": "mat_ordenes",
+    "mat_recepciones": "mat_recepciones",
+    "inv_catalogo": "inv_catalogo",
+    "inv_movimientos": "inv_movimientos",
+    "inv_solicitudes": "inv_solicitudes",
+    "fab_units": "fab_units",
+    "fab_step_logs": "fab_step_logs",
+    "fab_proyecto_recetas": "fab_proyecto_recetas",
+    "fab_packs": "fab_packs",
+    "fin_facturas_ap": "fin_facturas_ap",
+    "fin_facturas_ar": "fin_facturas_ar",
+    "fin_pagos": "fin_pagos",
+    "fin_cobranzas": "fin_cobranzas",
+    "fin_mov_bancarios": "fin_mov_bancarios",
+    "fin_saldos_bancarios": "fin_saldos_bancarios",
+    "fin_proveedores": "fin_proveedores",
+    "fin_proyectos_cerrados": "fin_proyectos_cerrados",
+    "fin_tarjetas_credito": "fin_tarjetas_credito"
+  },
+  "doc_requirements": {
+    "bom": { "area": "ingenieria", "doc_ids": ["i1"], "owner": "Martin" },
+    "planos_arquitectura": { "area": "ingenieria", "doc_ids": ["i3"], "owner": "Martin" },
+    "planos_fabricacion": { "area": "ingenieria", "doc_ids": ["i11", "i12", "i13", "i14", "i15", "i16"], "owner": "Martin" },
+    "gantt_fabricacion": { "area": "ingenieria", "doc_ids": ["i5"], "owner": "Martin / Felipe" },
+    "plan_despachos": { "area": "operaciones", "doc_ids": ["o1"], "owner": "Carlos / Gabriel" },
+    "gantt_compras": { "area": "operaciones", "doc_ids": ["o2"], "owner": "Carlos" },
+    "protocolo_transporte": { "area": "ingenieria", "doc_ids": ["i8"], "owner": "Martin / Gabriel" },
+    "calidad": { "area": "calidad", "doc_ids": ["q1"], "owner": "Calidad / Martin" },
+    "finanzas": { "area": "finanzas", "doc_ids": ["f1"], "owner": "Valentina" }
+  },
+  "thresholds": {
+    "stock_critical_qty": 0,
+    "pack_lookahead_days": 7,
+    "ap_overdue_days": 0,
+    "ar_overdue_days": 0,
+    "max_items_per_section": 12
+  },
+  "agents": {
+    "pulso_gerencial_diario": {
+      "enabled": true,
+      "send_email_default": true
+    },
+    "biblia_proyecto": {
+      "enabled": true
+    },
+    "traspaso_control_operacion": {
+      "enabled": true
+    }
+  }
+}

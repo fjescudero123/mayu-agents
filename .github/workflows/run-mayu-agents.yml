@@ -1,0 +1,95 @@
+name: Run MAYU Agents
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_mode:
+        description: "Modo a ejecutar"
+        type: choice
+        required: true
+        default: "daily_pulse"
+        options:
+          - daily_pulse
+          - test
+      date:
+        description: "Fecha YYYY-MM-DD"
+        required: false
+        default: ""
+      send_email:
+        description: "Enviar correo"
+        type: boolean
+        required: false
+        default: true
+  # Schedule deshabilitado hasta validar daily_pulse en runs manuales.
+  # Reactivar cuando el primer pulso este revisado y aprobado.
+  # schedule:
+  #   - cron: "0 12 * * 1-5"  # Lunes a viernes AM Chile aprox.
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mayu-agents-operational
+  cancel-in-progress: false
+
+jobs:
+  run:
+    name: Run MAYU operational agents
+    runs-on: ubuntu-latest
+    env:
+      MayuTenantId: ${{ vars.MAYU_GRAPH_TENANT_ID }}
+      MayuClientId: ${{ vars.MAYU_GRAPH_CLIENT_ID }}
+      MayuClientSecret: ${{ secrets.MAYU_GRAPH_CLIENT_SECRET }}
+      MayuOpenAiApiKey: ${{ secrets.MAYU_OPENAI_API_KEY }}
+      MayuOpenAiModel: ${{ vars.MAYU_OPENAI_MODEL }}
+      MayuFirebaseApiKey: ${{ vars.MAYU_FIREBASE_API_KEY }}
+      MAYU_FIREBASE_API_KEY: ${{ vars.MAYU_FIREBASE_API_KEY }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve run mode
+        id: resolve
+        shell: pwsh
+        run: |
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            $mode = "${{ inputs.run_mode }}"
+            $date = "${{ inputs.date }}"
+            $sendEmail = "${{ inputs.send_email }}"
+          } else {
+            $mode = "daily_pulse"
+            $date = ""
+            $sendEmail = "true"
+          }
+          if ([string]::IsNullOrWhiteSpace($sendEmail)) { $sendEmail = "true" }
+          "run_mode=$mode" >> $env:GITHUB_OUTPUT
+          "date=$date" >> $env:GITHUB_OUTPUT
+          "send_email=$sendEmail" >> $env:GITHUB_OUTPUT
+          Write-Output "Modo resuelto: $mode / Fecha=$date / SendEmail=$sendEmail"
+
+      - name: Run MAYU agents
+        shell: pwsh
+        run: |
+          $required = @(
+            "MayuTenantId",
+            "MayuClientId",
+            "MayuClientSecret"
+          )
+          foreach ($name in $required) {
+            if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) {
+              throw "Falta variable o secret requerido: $name"
+            }
+          }
+
+          $configPath = Join-Path $pwd "config/mayu_agents_config.json"
+          $env:MayuAgentsConfigJson = Get-Content -Raw -Path $configPath
+          if ([string]::IsNullOrWhiteSpace($env:TEMP) -and -not [string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) {
+            $env:TEMP = $env:RUNNER_TEMP
+          }
+
+          $send = [System.Convert]::ToBoolean("${{ steps.resolve.outputs.send_email }}")
+          & ./runtime/MayuAgents.core.ps1 `
+            -Mode "${{ steps.resolve.outputs.run_mode }}" `
+            -Date "${{ steps.resolve.outputs.date }}" `
+            -SendEmail:$send
