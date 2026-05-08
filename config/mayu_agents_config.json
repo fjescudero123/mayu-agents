@@ -69,7 +69,9 @@
     "pack_lookahead_days": 7,
     "ap_overdue_days": 0,
     "ar_overdue_days": 0,
-    "max_items_per_section": 12
+    "max_items_per_section": 12,
+    "max_finance_overdue_items": 8,
+    "max_inventory_examples": 8
   },
   "agents": {
     "pulso_gerencial_diario": {

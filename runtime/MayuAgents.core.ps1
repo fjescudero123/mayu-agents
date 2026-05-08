@@ -157,6 +157,11 @@ function Get-Number {
   try { return [double]$Value } catch { return $Default }
 }
 
+function Format-Clp {
+  param([double]$Value)
+  "$([Math]::Round($Value, 0)) CLP"
+}
+
 function Get-ConfigApiKey {
   param([object]$Config)
   $primary = [string]$Config.firebase.api_key_env
@@ -517,9 +522,21 @@ function Get-AbastecimientoIssues {
     if ($stock -le [double]$Config.thresholds.stock_critical_qty -and $skuDemand.ContainsKey($code)) {
       Add-Issue $issues (New-Issue -Severity "amarillo" -Area "Bodega" -Title "SKU demandado sin stock" -Detail "$code - $($sku.desc) tiene stock $stock y demanda en packs por $([Math]::Round($skuDemand[$code], 2))." -Owner "Mauricio" -Action "Recepcionar OC o resolver alternativa antes de armar/entregar pack." -Ref $code)
     }
-    if ($stock -gt 0 -and $cost -le 0) {
-      Add-Issue $issues (New-Issue -Severity "rojo" -Area "Bodega/Finanzas" -Title "Inventario sin valorizacion" -Detail "$code tiene stock $stock y costo promedio 0." -Owner "Mauricio / Valentina" -Action "Valorizar desde Kardex." -Ref $code)
-    }
+  }
+  $sinValor = @($Data.inv_catalogo | Where-Object {
+    $_.activo -ne $false -and
+    -not $_.aliasDe -and
+    (Get-Number $_.stock) -gt 0 -and
+    (Get-Number $_.costoPromedio) -le 0
+  })
+  if ($sinValor.Count -gt 0) {
+    $maxExamples = [int]$Config.thresholds.max_inventory_examples
+    if ($maxExamples -le 0) { $maxExamples = 8 }
+    $examples = @($sinValor | Select-Object -First $maxExamples | ForEach-Object {
+      $code = if ($_.code) { $_.code } else { $_.id }
+      "$code stock $(Get-Number $_.stock)"
+    })
+    Add-Issue $issues (New-Issue -Severity "rojo" -Area "Bodega/Finanzas" -Title "Inventario con valorizacion incompleta" -Detail "$($sinValor.Count) SKU(s) tienen stock > 0 y costo promedio 0. Ejemplos: $($examples -join '; ')." -Owner "Mauricio / Valentina" -Action "Valorizar desde Kardex antes de usar costos por proyecto/directorio." -Ref "inv_catalogo")
   }
   foreach ($oc in @($Data.mat_ordenes)) {
     if (-not $oc.precioUnit -or [double]$oc.precioUnit -le 0) {
@@ -533,28 +550,63 @@ function Get-FinanceIssues {
   param([object]$Config, [object]$Data, [datetime]$Now)
   $issues = [System.Collections.ArrayList]::new()
   $today = $Now.ToString("yyyy-MM-dd")
+  $apSinProyecto = @()
+  $apSinClasificar = @()
+  $apVencidas = @()
+  $arSinProyecto = @()
+  $arVencidas = @()
   foreach ($f in @($Data.fin_facturas_ap)) {
     $estado = [string]$f.estado
     if (@("PAGADA","ANULADA","RECHAZADA") -contains $estado) { continue }
     if ((-not $f.proyectoId) -and (-not $f.asignaciones) -and ([string]$f.lineaNegocio) -ne "OPEX_CORP" -and ([string]$f.categoriaContable) -notin @("OPEX_FIJO","OPEX_VARIABLE")) {
-      Add-Issue $issues (New-Issue -Severity "rojo" -Area "Finanzas" -Title "Factura AP sin proyecto" -Detail "$($f.razonSocialContraparte) folio $($f.folio) no esta asignada a proyecto." -Owner "Valentina" -Action "Clasificar factura AP." -Ref $f.id)
+      $apSinProyecto += $f
     }
     if ([string]$f.lineaNegocio -eq "SIN_CLASIFICAR") {
-      Add-Issue $issues (New-Issue -Severity "amarillo" -Area "Finanzas" -Title "Factura AP sin clasificar" -Detail "$($f.razonSocialContraparte) folio $($f.folio)." -Owner "Valentina" -Action "Clasificar linea/cuenta/proyecto." -Ref $f.id)
+      $apSinClasificar += $f
     }
     if ($f.fechaVencimiento -and [string]$f.fechaVencimiento -lt $today) {
-      Add-Issue $issues (New-Issue -Severity "rojo" -Area "Caja" -Title "CxP vencida" -Detail "$($f.razonSocialContraparte) folio $($f.folio) vencio $($f.fechaVencimiento), monto $($f.montoTotal)." -Owner "Valentina / Felix" -Action "Decidir pago o renegociacion." -Ref $f.id)
+      $apVencidas += $f
     }
   }
   foreach ($f in @($Data.fin_facturas_ar)) {
     $estado = [string]$f.estado
     if (@("COBRADA","ANULADA") -contains $estado) { continue }
     if ((-not $f.crmProjectId) -and (-not $f.proyectoId) -and (-not $f.asignaciones)) {
-      Add-Issue $issues (New-Issue -Severity "amarillo" -Area "Finanzas" -Title "Factura AR sin proyecto" -Detail "$($f.razonSocialContraparte) folio $($f.folio) no esta ligada a CRM/proyecto." -Owner "Valentina" -Action "Clasificar factura AR." -Ref $f.id)
+      $arSinProyecto += $f
     }
     if ($f.fechaVencimiento -and [string]$f.fechaVencimiento -lt $today) {
-      Add-Issue $issues (New-Issue -Severity "rojo" -Area "Caja" -Title "CxC vencida" -Detail "$($f.razonSocialContraparte) folio $($f.folio) vencio $($f.fechaVencimiento), monto $($f.montoTotal)." -Owner "Valentina / Comercial" -Action "Gestionar cobranza." -Ref $f.id)
+      $arVencidas += $f
     }
+  }
+  $maxOverdue = [int]$Config.thresholds.max_finance_overdue_items
+  if ($maxOverdue -le 0) { $maxOverdue = 8 }
+  foreach ($f in @($apVencidas | Sort-Object { -1 * (Get-Number $_.montoTotal) } | Select-Object -First $maxOverdue)) {
+    Add-Issue $issues (New-Issue -Severity "rojo" -Area "Caja" -Title "CxP vencida" -Detail "$($f.razonSocialContraparte) folio $($f.folio) vencio $($f.fechaVencimiento), monto $(Format-Clp (Get-Number $f.montoTotal))." -Owner "Valentina / Felix" -Action "Decidir pago o renegociacion." -Ref $f.id)
+  }
+  if ($apVencidas.Count -gt $maxOverdue) {
+    $rest = @($apVencidas | Sort-Object { -1 * (Get-Number $_.montoTotal) } | Select-Object -Skip $maxOverdue)
+    $restMonto = ($rest | ForEach-Object { Get-Number $_.montoTotal } | Measure-Object -Sum).Sum
+    Add-Issue $issues (New-Issue -Severity "rojo" -Area "Caja" -Title "CxP vencida adicional agrupada" -Detail "$($rest.Count) factura(s) AP vencidas adicionales por aprox. $(Format-Clp $restMonto)." -Owner "Valentina / Felix" -Action "Revisar lista completa en Finanzas." -Ref "fin_facturas_ap")
+  }
+  foreach ($f in @($arVencidas | Sort-Object { -1 * (Get-Number $_.montoTotal) } | Select-Object -First $maxOverdue)) {
+    Add-Issue $issues (New-Issue -Severity "rojo" -Area "Caja" -Title "CxC vencida" -Detail "$($f.razonSocialContraparte) folio $($f.folio) vencio $($f.fechaVencimiento), monto $(Format-Clp (Get-Number $f.montoTotal))." -Owner "Valentina / Comercial" -Action "Gestionar cobranza." -Ref $f.id)
+  }
+  if ($arVencidas.Count -gt $maxOverdue) {
+    $rest = @($arVencidas | Sort-Object { -1 * (Get-Number $_.montoTotal) } | Select-Object -Skip $maxOverdue)
+    $restMonto = ($rest | ForEach-Object { Get-Number $_.montoTotal } | Measure-Object -Sum).Sum
+    Add-Issue $issues (New-Issue -Severity "rojo" -Area "Caja" -Title "CxC vencida adicional agrupada" -Detail "$($rest.Count) factura(s) AR vencidas adicionales por aprox. $(Format-Clp $restMonto)." -Owner "Valentina / Comercial" -Action "Revisar lista completa en Finanzas." -Ref "fin_facturas_ar")
+  }
+  if ($apSinProyecto.Count -gt 0) {
+    $monto = ($apSinProyecto | ForEach-Object { Get-Number $_.montoTotal } | Measure-Object -Sum).Sum
+    Add-Issue $issues (New-Issue -Severity "amarillo" -Area "Finanzas" -Title "Facturas AP sin proyecto agrupadas" -Detail "$($apSinProyecto.Count) factura(s) AP sin proyecto por aprox. $(Format-Clp $monto). Pueden superponerse con sin clasificar." -Owner "Valentina" -Action "Clasificar por lote en Finanzas para destrabar costos por proyecto." -Ref "fin_facturas_ap")
+  }
+  if ($apSinClasificar.Count -gt 0) {
+    $monto = ($apSinClasificar | ForEach-Object { Get-Number $_.montoTotal } | Measure-Object -Sum).Sum
+    Add-Issue $issues (New-Issue -Severity "amarillo" -Area "Finanzas" -Title "Facturas AP sin clasificar agrupadas" -Detail "$($apSinClasificar.Count) factura(s) AP en SIN_CLASIFICAR por aprox. $(Format-Clp $monto)." -Owner "Valentina" -Action "Clasificar linea/cuenta/proyecto por lote." -Ref "fin_facturas_ap")
+  }
+  if ($arSinProyecto.Count -gt 0) {
+    $monto = ($arSinProyecto | ForEach-Object { Get-Number $_.montoTotal } | Measure-Object -Sum).Sum
+    Add-Issue $issues (New-Issue -Severity "amarillo" -Area "Finanzas" -Title "Facturas AR sin proyecto agrupadas" -Detail "$($arSinProyecto.Count) factura(s) AR sin proyecto por aprox. $(Format-Clp $monto)." -Owner "Valentina" -Action "Vincular a CRM/proyecto para lectura comercial y directorio." -Ref "fin_facturas_ar")
   }
   $ocPressure = 0.0
   foreach ($oc in @($Data.mat_ordenes | Where-Object { ([string]$_.status) -notin @("total","recibida_total","cerrada","anulada") })) {
@@ -618,6 +670,41 @@ function Limit-Issues {
   @($Issues | Select-Object -First $Max)
 }
 
+function Get-DecisionGroupKey {
+  param([object]$Issue)
+  $ref = [string]$Issue.ref
+  if ([string]::IsNullOrWhiteSpace($ref)) {
+    return "$($Issue.area)|$($Issue.title)"
+  }
+  if ($ref -match '^pack-(PRY-[A-Z0-9]+)') { return $matches[1] }
+  $ref
+}
+
+function Select-DecisionItems {
+  param([object[]]$Issues, [int]$Max = 8)
+  $groups = [ordered]@{}
+  foreach ($issue in @($Issues)) {
+    if ($null -eq $issue) { continue }
+    $key = Get-DecisionGroupKey -Issue $issue
+    if (-not $groups.Contains($key)) { $groups[$key] = @() }
+    $groups[$key] += $issue
+  }
+  $items = @()
+  foreach ($key in $groups.Keys) {
+    $list = @($groups[$key])
+    $first = $list[0]
+    $titles = @($list | ForEach-Object { $_.title } | Select-Object -Unique)
+    $text = if ($list.Count -gt 1) {
+      "$($list.Count) alertas en ${key}: $($titles -join '; '). Accion: $($first.action)"
+    } else {
+      "$($first.title): $($first.action)"
+    }
+    $items += [pscustomobject]@{ text = $text; owner = $first.owner; ref = $first.ref }
+    if ($items.Count -ge $Max) { break }
+  }
+  $items
+}
+
 function Build-Pulse {
   param([object]$Config, [object]$Data, [datetime]$Now)
   $bibliaRows = @(Get-BibliaProjectRows -Config $Config -ChkProjects @($Data.chk_projects))
@@ -633,9 +720,7 @@ function Build-Pulse {
   $rojos = @($all | Where-Object { $_.severity -eq "rojo" })
   $amarillos = @($all | Where-Object { $_.severity -eq "amarillo" })
   $infos = @($all | Where-Object { $_.severity -eq "info" })
-  $decisiones = @($rojos | Select-Object -First 8 | ForEach-Object {
-    [pscustomobject]@{ text = "$($_.title): $($_.action)"; owner = $_.owner; ref = $_.ref }
-  })
+  $decisiones = @(Select-DecisionItems -Issues $rojos -Max 8)
   [pscustomobject]@{
     generatedAt = $Now.ToString("o")
     date = $Now.ToString("yyyy-MM-dd")
