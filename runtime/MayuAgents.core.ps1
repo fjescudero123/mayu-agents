@@ -462,11 +462,26 @@ function Get-PackIssues {
   $catalog = @{}
   foreach ($sku in @($Data.inv_catalogo)) { if ($sku.code) { $catalog[[string]$sku.code] = $sku } elseif ($sku.id) { $catalog[[string]$sku.id] = $sku } }
   $activePacks = @($Data.fab_packs | Where-Object { @("planificado","armado","entregado","recibido") -contains [string]$_.estado })
+  $packsSinCodigo = [ordered]@{}
   foreach ($pack in $activePacks) {
     $label = "$($pack.projectName) / $($pack.modulo) / $($pack.fecha)"
     $itemsSinSku = @($pack.items | Where-Object { -not $_.skuCode })
     if ($itemsSinSku.Count -gt 0 -or $pack.recetaIncompleta) {
-      Add-Issue $issues (New-Issue -Severity "rojo" -Area "Packs" -Title "Pack no armable por productos sin definir" -Detail "$label tiene $($itemsSinSku.Count) producto(s) sin codigo de bodega." -Owner "Carlos" -Action "Completar codificacion y cotizacion antes de pedir armado a Bodega." -Ref $pack.id)
+      $projectKey = if ($pack.matProjectId) { [string]$pack.matProjectId } elseif ($pack.projectName) { [string]$pack.projectName } else { [string]$pack.id }
+      if (-not $packsSinCodigo.Contains($projectKey)) {
+        $packsSinCodigo[$projectKey] = [pscustomobject]@{
+          projectName = if ($pack.projectName) { [string]$pack.projectName } else { $projectKey }
+          packCount = 0
+          itemCount = 0
+          examples = [System.Collections.ArrayList]::new()
+        }
+      }
+      $group = $packsSinCodigo[$projectKey]
+      $group.packCount += 1
+      $group.itemCount += $itemsSinSku.Count
+      if ($group.examples.Count -lt 3) {
+        [void]$group.examples.Add("$($pack.modulo) / $($pack.fecha)")
+      }
     }
     if ([string]$pack.estado -eq "planificado" -and -not $pack.compromisoEntregaBodega) {
       Add-Issue $issues (New-Issue -Severity "amarillo" -Area "Packs" -Title "Pack sin compromiso de Bodega" -Detail "$label esta planificado sin fecha comprometida por Bodega." -Owner "Mauricio" -Action "Asignar compromiso de entrega en Bodega." -Ref $pack.id)
@@ -489,6 +504,13 @@ function Get-PackIssues {
     if ([string]$pack.estado -eq "recibido") {
       Add-Issue $issues (New-Issue -Severity "amarillo" -Area "Packs/Fabricacion" -Title "Pack recibido no cerrado" -Detail "$label esta recibido y falta cierre." -Owner "Felipe" -Action "Cerrar pack o registrar desvio/devolucion." -Ref $pack.id)
     }
+  }
+  foreach ($projectKey in $packsSinCodigo.Keys) {
+    $group = $packsSinCodigo[$projectKey]
+    $examples = @($group.examples)
+    $exampleText = if ($examples.Count -gt 0) { " Ejemplos: $($examples -join '; ')." } else { "" }
+    $itemText = if ($group.itemCount -gt 0) { "$($group.itemCount) producto(s) sin codigo de bodega" } else { "receta incompleta" }
+    Add-Issue $issues (New-Issue -Severity "rojo" -Area "Packs" -Title "Packs no armables por productos sin definir" -Detail "$($group.projectName) tiene $($group.packCount) pack(s) no armable(s) por $itemText.$exampleText" -Owner "Carlos" -Action "Completar codificacion y cotizacion antes de pedir armado a Bodega." -Ref $projectKey)
   }
   @($issues)
 }
@@ -700,12 +722,25 @@ function Get-DecisionGroupKey {
 function Get-EntityDisplayName {
   param([object]$Entity, [string]$Fallback)
   if ($null -eq $Entity) { return $Fallback }
-  foreach ($prop in @("name", "nombre", "projectName", "title", "titulo", "client", "cliente")) {
+  foreach ($prop in @("name", "nombre", "projectName", "razonSocialContraparte", "title", "titulo", "client", "cliente")) {
     $property = $Entity.PSObject.Properties[$prop]
     if ($property -and -not [string]::IsNullOrWhiteSpace([string]$property.Value)) {
       return [string]$property.Value
     }
   }
+  $Fallback
+}
+
+function Get-InvoiceDisplayName {
+  param([object]$Invoice, [string]$Fallback)
+  $name = Get-EntityDisplayName -Entity $Invoice -Fallback ""
+  $folio = ""
+  if ($Invoice -and $Invoice.PSObject.Properties["folio"]) { $folio = [string]$Invoice.folio }
+  if (-not [string]::IsNullOrWhiteSpace($name) -and -not [string]::IsNullOrWhiteSpace($folio)) {
+    return "$name folio $folio"
+  }
+  if (-not [string]::IsNullOrWhiteSpace($name)) { return $name }
+  if (-not [string]::IsNullOrWhiteSpace($folio)) { return "Folio $folio" }
   $Fallback
 }
 
@@ -721,6 +756,12 @@ function Get-DecisionLabels {
     }
     foreach ($crm in @($Data.crm_projects)) {
       if ($crm.id) { $labels[[string]$crm.id] = Get-EntityDisplayName -Entity $crm -Fallback ([string]$crm.id) }
+    }
+    foreach ($ap in @($Data.fin_facturas_ap)) {
+      if ($ap.id) { $labels[[string]$ap.id] = Get-InvoiceDisplayName -Invoice $ap -Fallback ([string]$ap.id) }
+    }
+    foreach ($ar in @($Data.fin_facturas_ar)) {
+      if ($ar.id) { $labels[[string]$ar.id] = Get-InvoiceDisplayName -Invoice $ar -Fallback ([string]$ar.id) }
     }
   }
   $labels["inv_catalogo"] = "Inventario"
