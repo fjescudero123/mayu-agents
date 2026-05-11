@@ -37,8 +37,8 @@
       "days": ["MO"],
       "start": "09:00",
       "end": "09:45",
-      "responsable": "Felix Escudero Vargas / Emilio Fernandez",
-      "to": ["fescudero@imayu.cl", "efernandez@imayu.cl"],
+      "responsable": "Emilio Fernandez",
+      "to": ["efernandez@imayu.cl", "fescudero@imayu.cl"],
       "cc": ["fjescudero@imayu.cl"]
     },
     {
