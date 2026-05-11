@@ -1,5 +1,5 @@
 param(
-  [ValidateSet("post_reunion", "manual_due_sweep", "weekly_report", "monthly_report", "test")]
+  [ValidateSet("pre_reunion", "post_reunion", "manual_due_sweep", "weekly_report", "monthly_report", "test")]
   [string]$Mode = "post_reunion",
   [string]$Tipo = "",
   [string]$Date = "",
@@ -928,6 +928,22 @@ function Get-SentAlertKeys {
   return $keys
 }
 
+function Get-SentReminderKeys {
+  param([object[]]$Items)
+  $keys = New-Object System.Collections.Generic.HashSet[string]
+  foreach ($item in @($Items)) {
+    if ($null -eq $item) {
+      continue
+    }
+    $name = [string]$item.name
+    $match = [regex]::Match($name, "^recordatorio_(.+)_(\d{4}-\d{2}-\d{2})\.json$")
+    if ($match.Success) {
+      [void]$keys.Add("$($match.Groups[1].Value)|$($match.Groups[2].Value)")
+    }
+  }
+  return $keys
+}
+
 function New-AlertBody {
   param([object]$Config, [object]$Occurrence, [string]$FileName)
   $uploadLink = $Config.sharepoint.minutas_entrada_link
@@ -946,6 +962,34 @@ function New-AlertBody {
     <tr><td style="font-weight:bold; padding:6px; border:1px solid #ddd;">Falta</td><td style="padding:6px; border:1px solid #ddd;">No aparece una minuta/reporte valido subido en SharePoint</td></tr>
     <tr><td style="font-weight:bold; padding:6px; border:1px solid #ddd;">Accion requerida</td><td style="padding:6px; border:1px solid #ddd;">Rellenar el AGENDA.docx adjunto y subirlo a SharePoint en minutas_entrada</td></tr>
     <tr><td style="font-weight:bold; padding:6px; border:1px solid #ddd;">Fecha limite</td><td style="padding:6px; border:1px solid #ddd;">Hoy</td></tr>
+  </table>
+  <p><strong>Carpeta de subida:</strong><br><a href="$uploadLink">$uploadLink</a></p>
+  <p><strong>Nombre obligatorio del archivo:</strong><br><code>$FileName</code></p>
+  <p style="color:#9a3412;"><strong>Importante:</strong> si el archivo se sube con otro nombre, el flujo automatico puede no procesarlo correctamente.</p>
+  <p style="font-size: 12px; color: #777; margin-top: 28px;">Generado por el fiscalizador de reuniones MAYU.</p>
+</body>
+</html>
+"@
+}
+
+function New-ReminderBody {
+  param([object]$Config, [object]$Occurrence, [string]$FileName)
+  $uploadLink = $Config.sharepoint.minutas_entrada_link
+  $tipo = $Occurrence.Tipo
+  $fecha = $Occurrence.Fecha.ToString("yyyy-MM-dd")
+  $hora = [string]$Occurrence.Meeting.start
+  $responsable = $Occurrence.Meeting.responsable
+@"
+<html>
+<body style="font-family: Arial, sans-serif; font-size: 14px; color: #222; max-width: 760px;">
+  <h2 style="margin-bottom: 4px;">Recordatorio MAYU - reunion de hoy</h2>
+  <p style="margin-top: 0; color: #666;">Control automatico del sistema de reuniones.</p>
+  <p>Hola $responsable,</p>
+  <p>Te recordamos la reunion <strong>$tipo</strong> de hoy <strong>$fecha</strong> a las <strong>$hora</strong>.</p>
+  <table style="border-collapse: collapse; width: 100%; margin: 18px 0;">
+    <tr><td style="font-weight:bold; padding:6px; border:1px solid #ddd;">Accion requerida</td><td style="padding:6px; border:1px solid #ddd;">Usar el AGENDA.docx adjunto durante la reunion y subirlo luego a SharePoint en minutas_entrada</td></tr>
+    <tr><td style="font-weight:bold; padding:6px; border:1px solid #ddd;">Fecha</td><td style="padding:6px; border:1px solid #ddd;">$fecha</td></tr>
+    <tr><td style="font-weight:bold; padding:6px; border:1px solid #ddd;">Hora</td><td style="padding:6px; border:1px solid #ddd;">$hora</td></tr>
   </table>
   <p><strong>Carpeta de subida:</strong><br><a href="$uploadLink">$uploadLink</a></p>
   <p><strong>Nombre obligatorio del archivo:</strong><br><code>$FileName</code></p>
@@ -1001,6 +1045,54 @@ function Send-MissingAlert {
       -ContentType "application/json; charset=utf-8"
   } catch {
     Write-Warning "La alerta fue enviada, pero no se pudo registrar en SharePoint. $($_.Exception.Message)"
+  }
+}
+
+function Send-PreMeetingReminder {
+  param(
+    [object]$Config,
+    [string]$Token,
+    [string]$SiteId,
+    [object]$Occurrence
+  )
+
+  $tipo = $Occurrence.Tipo
+  $fileName = Get-ExpectedFileName -MeetingType $tipo -TargetDate $Occurrence.Fecha
+  $attachment = $null
+  try {
+    $attachment = Get-FileBytes -Token $Token -SiteId $SiteId -FilePath "$($Config.sharepoint.templates_folder)/AGENDA_$tipo.docx"
+  } catch {
+    Write-Warning "No se pudo adjuntar template AGENDA_$tipo.docx. Se enviara el recordatorio sin adjunto."
+  }
+
+  Send-GraphMail `
+    -Token $Token `
+    -Sender $Config.mail.sender `
+    -To @($Occurrence.Meeting.to) `
+    -Cc @($Occurrence.Meeting.cc) `
+    -Subject "Recordatorio MAYU - reunion hoy - $tipo $($Occurrence.Fecha.ToString("yyyy-MM-dd"))" `
+    -HtmlBody (New-ReminderBody -Config $Config -Occurrence $Occurrence -FileName $fileName) `
+    -AttachmentName $(if ($attachment) { "AGENDA_$tipo.docx" } else { "" }) `
+    -AttachmentBytes $attachment
+
+  $recordDoc = @{
+    key = "$tipo|$($Occurrence.Fecha.ToString("yyyy-MM-dd"))"
+    tipo = $tipo
+    fecha = $Occurrence.Fecha.ToString("yyyy-MM-dd")
+    sent_at = (Get-Date).ToUniversalTime().ToString("o")
+    to = @($Occurrence.Meeting.to)
+    cc = @($Occurrence.Meeting.cc)
+  } | ConvertTo-Json -Depth 10
+
+  try {
+    Write-TextFileToGraph `
+      -Token $Token `
+      -SiteId $SiteId `
+      -FilePath "$($Config.sharepoint.recordatorios_enviados_folder)/recordatorio_${tipo}_$($Occurrence.Fecha.ToString("yyyy-MM-dd")).json" `
+      -Text $recordDoc `
+      -ContentType "application/json; charset=utf-8"
+  } catch {
+    Write-Warning "El recordatorio fue enviado, pero no se pudo registrar en SharePoint. $($_.Exception.Message)"
   }
 }
 
@@ -1213,6 +1305,43 @@ function Invoke-PostReunion {
   Write-Output "Revision post reunion completa. Alertas enviadas: $sentCount"
 }
 
+function Invoke-PreReunion {
+  param(
+    [object]$Config,
+    [string]$Token,
+    [string]$SiteId,
+    [datetime]$Now,
+    [string]$TargetTipo,
+    [string]$TargetDate
+  )
+
+  $checkDate = if ($TargetDate) { [datetime]::Parse($TargetDate) } else { $Now.Date }
+  $occurrences = Get-ExpectedOccurrences -Config $Config -StartDate $checkDate -EndDate $checkDate
+  if ($TargetTipo) {
+    $occurrences = @($occurrences | Where-Object { $_.Tipo -eq $TargetTipo })
+  }
+
+  Ensure-GraphFolder -Token $Token -SiteId $SiteId -FolderPath $Config.sharepoint.recordatorios_enviados_folder
+  $reminderItems = Get-FolderItemsRecursive -Token $Token -SiteId $SiteId -FolderPath $Config.sharepoint.recordatorios_enviados_folder
+  $sentKeys = Get-SentReminderKeys -Items $reminderItems
+  if ($null -eq $sentKeys) {
+    $sentKeys = New-Object System.Collections.Generic.HashSet[string]
+  }
+
+  $sentCount = 0
+  foreach ($occ in @($occurrences)) {
+    $key = "$($occ.Tipo)|$($occ.Fecha.ToString("yyyy-MM-dd"))"
+    if ($sentKeys.Contains($key)) {
+      Write-Output "Ya existia recordatorio: $key"
+      continue
+    }
+    Send-PreMeetingReminder -Config $Config -Token $Token -SiteId $SiteId -Occurrence $occ
+    Write-Output "Recordatorio enviado: $key"
+    $sentCount += 1
+  }
+  Write-Output "Revision pre reunion completa. Recordatorios enviados: $sentCount"
+}
+
 function Invoke-ManualDueSweep {
   param([object]$Config, [string]$Token, [string]$SiteId, [datetime]$Now, [int]$Days)
 
@@ -1309,11 +1438,14 @@ $siteId = Get-SiteId -Token $token -HostName $config.sharepoint.host
 Write-Output "Fiscalizador MAYU iniciado. Modo=$Mode Tipo=$Tipo Fecha=$Date HoraMAYU=$($now.ToString("s"))"
 
 Ensure-GraphFolder -Token $token -SiteId $siteId -FolderPath $config.sharepoint.alertas_enviadas_folder
+Ensure-GraphFolder -Token $token -SiteId $siteId -FolderPath $config.sharepoint.recordatorios_enviados_folder
 Ensure-GraphFolder -Token $token -SiteId $siteId -FolderPath $config.sharepoint.evaluaciones_folder
 Ensure-GraphFolder -Token $token -SiteId $siteId -FolderPath (Get-IntelligenceFolder -Config $config)
 Ensure-GraphFolder -Token $token -SiteId $siteId -FolderPath $config.sharepoint.reportes_folder
 
-if ($Mode -eq "post_reunion") {
+if ($Mode -eq "pre_reunion") {
+  Invoke-PreReunion -Config $config -Token $token -SiteId $siteId -Now $now -TargetTipo $Tipo -TargetDate $Date
+} elseif ($Mode -eq "post_reunion") {
   Invoke-PostReunion -Config $config -Token $token -SiteId $siteId -Now $now -TargetTipo $Tipo -TargetDate $Date
 } elseif ($Mode -eq "manual_due_sweep") {
   try {

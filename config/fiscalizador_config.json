@@ -7,6 +7,7 @@
     "minutas_entrada_link": "https://inmobiliariamayu.sharepoint.com/Shared%20Documents/minutas_entrada",
     "templates_folder": "fiscalizador_templates",
     "runtime_script_path": "minutas_archivadas/runtime/FiscalizadorReunionesMAYU.core.ps1",
+    "recordatorios_enviados_folder": "minutas_archivadas/recordatorios_enviados",
     "alertas_enviadas_folder": "minutas_archivadas/alertas_enviadas",
     "evaluaciones_folder": "minutas_archivadas/evaluaciones",
     "seguimiento_folder": "minutas_archivadas/seguimiento_compromisos",

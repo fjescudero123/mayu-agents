@@ -9,6 +9,7 @@ on:
         required: true
         default: "test"
         options:
+          - pre_reunion
           - post_reunion
           - test
           - weekly_report
@@ -29,16 +30,16 @@ on:
   schedule:
     # Lunes AM Chile: reporte semanal.
     - cron: "0 12 * * 1"
-    # Post reunion Chile: alertas oportunas despues de cada reunion recurrente.
-    - cron: "40 14 * * 1-5"
-    - cron: "45 15 * * 1"
-    - cron: "30 15 * * 4"
-    - cron: "0 17 * * 2"
-    - cron: "0 18 * * 5"
-    - cron: "30 21 * * 3"
-    # Lunes a viernes, mediodia/tarde Chile: barridos de alertas vencidas.
-    - cron: "0 15 * * 1-5"
-    - cron: "30 21 * * 1-5"
+    # Recordatorios pre reunion Chile: correo con AGENDA.docx y carpeta de subida.
+    - cron: "0 12 * * 1-5"
+    - cron: "30 12 * * 1"
+    - cron: "30 12 * * 4"
+    - cron: "30 13 * * 2"
+    - cron: "0 18 * * 3"
+    - cron: "30 14 * * 4"
+    - cron: "30 17 * * 2"
+    - cron: "30 14 * * 5"
+    - cron: "30 18 * * 5"
     # Dias posibles de cierre de mes; el runtime solo envia si efectivamente es ultimo dia.
     - cron: "30 22 28-31 * *"
 
@@ -82,43 +83,50 @@ jobs:
                 $mode = "weekly_report"
                 $lookbackDays = "7"
               }
-              "40 14 * * 1-5" {
-                $mode = "post_reunion"
+              "0 12 * * 1-5" {
+                $mode = "pre_reunion"
                 $lookbackDays = "7"
                 $tipo = "planta_diario"
               }
-              "45 15 * * 1" {
-                $mode = "post_reunion"
+              "30 12 * * 1" {
+                $mode = "pre_reunion"
                 $lookbackDays = "7"
                 $tipo = "comercial"
               }
-              "30 15 * * 4" {
-                $mode = "post_reunion"
+              "30 12 * * 4" {
+                $mode = "pre_reunion"
                 $lookbackDays = "7"
                 $tipo = "financiero_semanal"
               }
-              "0 17 * * 2" {
-                $mode = "post_reunion"
+              "30 13 * * 2" {
+                $mode = "pre_reunion"
                 $lookbackDays = "7"
                 $tipo = "proyectos"
               }
-              "0 18 * * 5" {
-                $mode = "post_reunion"
-                $lookbackDays = "7"
-                $tipo = "ejecutivo"
-              }
-              "30 21 * * 3" {
-                $mode = "post_reunion"
+              "0 18 * * 3" {
+                $mode = "pre_reunion"
                 $lookbackDays = "7"
                 $tipo = "id"
               }
-              "0 15 * * 1-5" {
-                $mode = "manual_due_sweep"
+              "30 14 * * 4" {
+                $mode = "pre_reunion"
                 $lookbackDays = "7"
+                $tipo = "capacidad_mensual"
               }
-              "30 21 * * 1-5" {
-                $mode = "manual_due_sweep"
+              "30 14 * * 5" {
+                $mode = "pre_reunion"
                 $lookbackDays = "7"
+                $tipo = "ejecutivo"
+              }
+              "30 17 * * 2" {
+                $mode = "pre_reunion"
+                $lookbackDays = "7"
+                $tipo = "eerr_mensual"
+              }
+              "30 18 * * 5" {
+                $mode = "pre_reunion"
+                $lookbackDays = "7"
+                $tipo = "directorio"
               }
               "30 22 28-31 * *" {
                 $mode = "monthly_report"

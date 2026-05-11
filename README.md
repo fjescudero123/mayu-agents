@@ -62,6 +62,7 @@ No se requiere OIDC, Azure login ni environment con aprobacion para la ejecucion
 
 En GitHub Actions, usar workflow **Run Fiscalizador MAYU**:
 
+- `pre_reunion`: envia recordatorio antes de la reunion con `AGENDA.docx` adjunto y link a `minutas_entrada`.
 - `post_reunion`: revisa si falta evidencia despues de una reunion especifica o de las reuniones vencidas del dia.
 - `test`: envia correo de prueba.
 - `weekly_report`: genera reporte semanal.
@@ -130,14 +131,15 @@ Secuencia sugerida para validar:
 GitHub usa cron en UTC:
 
 - `0 12 * * 1`: reporte semanal, lunes AM Chile.
-- `40 14 * * 1-5`: post reunion planta diario.
-- `45 15 * * 1`: post reunion comercial.
-- `0 17 * * 2`: post reunion proyectos.
-- `30 21 * * 3`: post reunion I+D.
-- `30 15 * * 4`: post reunion financiero semanal.
-- `0 18 * * 5`: post reunion ejecutivo.
-- `0 15 * * 1-5`: barrido de alertas vencidas, lunes a viernes.
-- `30 21 * * 1-5`: segundo barrido de alertas vencidas, lunes a viernes.
+- `0 12 * * 1-5`: recordatorio pre reunion planta diario.
+- `30 12 * * 1`: recordatorio pre reunion comercial.
+- `30 13 * * 2`: recordatorio pre reunion proyectos.
+- `0 18 * * 3`: recordatorio pre reunion I+D.
+- `30 12 * * 4`: recordatorio pre reunion financiero semanal.
+- `30 14 * * 5`: recordatorio pre reunion ejecutivo.
+- `30 17 * * 2`: recordatorio pre reunion EERR mensual; el runtime solo envia si ese martes corresponde.
+- `30 14 * * 4`: recordatorio pre reunion capacidad mensual; el runtime solo envia si ese jueves corresponde.
+- `30 18 * * 5`: recordatorio pre reunion directorio; el runtime solo envia si ese viernes corresponde.
 - `30 22 28-31 * *`: reporte mensual; el runtime solo envia si es ultimo dia del mes.
 
 ## Seguridad
