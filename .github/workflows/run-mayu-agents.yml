@@ -10,6 +10,7 @@ on:
         default: "daily_pulse"
         options:
           - daily_pulse
+          - bodega_materiales
           - test
       date:
         description: "Fecha YYYY-MM-DD"
@@ -23,6 +24,8 @@ on:
   schedule:
     # Lunes a viernes 12:00 UTC (~08:00 Chile horario actual). Pulso gerencial diario.
     - cron: "0 12 * * 1-5"
+    # Lunes a viernes 12:15 UTC (~08:15 Chile horario actual). Agente Bodega + Materiales.
+    - cron: "15 12 * * 1-5"
 
 permissions:
   contents: read
@@ -57,7 +60,11 @@ jobs:
             $date = "${{ inputs.date }}"
             $sendEmail = "${{ inputs.send_email }}"
           } else {
-            $mode = "daily_pulse"
+            if ("${{ github.event.schedule }}" -eq "15 12 * * 1-5") {
+              $mode = "bodega_materiales"
+            } else {
+              $mode = "daily_pulse"
+            }
             $date = ""
             $sendEmail = "true"
           }

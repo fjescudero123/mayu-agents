@@ -1,5 +1,5 @@
 param(
-  [ValidateSet("daily_pulse", "test")]
+  [ValidateSet("daily_pulse", "bodega_materiales", "test")]
   [string]$Mode = "daily_pulse",
   [string]$Date = "",
   [bool]$SendEmail = $true
@@ -585,6 +585,532 @@ function Get-AbastecimientoIssues {
   @($issues)
 }
 
+function Get-FirstText {
+  param([object]$Object, [string[]]$Names)
+  if ($null -eq $Object) { return "" }
+  foreach ($name in $Names) {
+    $prop = $Object.PSObject.Properties[$name]
+    if ($prop -and -not [string]::IsNullOrWhiteSpace([string]$prop.Value)) {
+      return [string]$prop.Value
+    }
+  }
+  ""
+}
+
+function Normalize-MayuText {
+  param([object]$Value)
+  $text = ([string]$Value).ToLowerInvariant()
+  $text = $text -replace "[^a-z0-9áéíóúñü ]", " "
+  ($text -replace "\s+", " ").Trim()
+}
+
+function Get-TextSimilarity {
+  param([object]$A, [object]$B)
+  $aText = Normalize-MayuText $A
+  $bText = Normalize-MayuText $B
+  if ([string]::IsNullOrWhiteSpace($aText) -or [string]::IsNullOrWhiteSpace($bText)) { return 0.0 }
+  if ($aText -eq $bText) { return 1.0 }
+  $aWords = @($aText -split " " | Where-Object { $_.Length -gt 2 } | Select-Object -Unique)
+  $bWords = @($bText -split " " | Where-Object { $_.Length -gt 2 } | Select-Object -Unique)
+  if ($aWords.Count -eq 0 -or $bWords.Count -eq 0) { return 0.0 }
+  $set = New-Object System.Collections.Generic.HashSet[string]
+  foreach ($w in $aWords) { [void]$set.Add($w) }
+  $intersection = 0
+  foreach ($w in $bWords) { if ($set.Contains($w)) { $intersection++ } }
+  $union = @($aWords + $bWords | Select-Object -Unique).Count
+  if ($union -eq 0) { return 0.0 }
+  [double]$intersection / [double]$union
+}
+
+function Get-NumberTokens {
+  param([object]$Value)
+  $text = ([string]$Value).ToLowerInvariant()
+  @([regex]::Matches($text, "\d+(?:[.,]\d+)?") | ForEach-Object { $_.Value -replace ",", "." } | Select-Object -Unique)
+}
+
+function Test-MeaningfullyDifferentSpecs {
+  param([object]$A, [object]$B)
+  $aNums = @(Get-NumberTokens $A)
+  $bNums = @(Get-NumberTokens $B)
+  if ($aNums.Count -eq 0 -or $bNums.Count -eq 0) { return $false }
+  $a = ($aNums | Sort-Object) -join "|"
+  $b = ($bNums | Sort-Object) -join "|"
+  $a -ne $b
+}
+
+function New-BodegaIssue {
+  param(
+    [string]$CheckId,
+    [ValidateSet("CRITICO", "ALTO", "MEDIO", "BAJO")]
+    [string]$Level,
+    [string]$Block,
+    [string]$Title,
+    [string]$Detail,
+    [string]$Owner,
+    [string]$Action,
+    [string]$Ref
+  )
+  $severity = if ($Level -eq "CRITICO") { "rojo" } elseif ($Level -in @("ALTO", "MEDIO")) { "amarillo" } else { "info" }
+  [pscustomobject]@{
+    severity = $severity
+    level = $Level
+    checkId = $CheckId
+    block = $Block
+    area = "Bodega + Materiales"
+    title = "$CheckId - $Title"
+    detail = $Detail
+    owner = $Owner
+    action = $Action
+    ref = $Ref
+  }
+}
+
+function Add-BodegaIssue {
+  param([System.Collections.ArrayList]$List, [object]$Issue)
+  [void]$List.Add($Issue)
+}
+
+function Get-BodegaBomItems {
+  param([object[]]$MatProjects)
+  $items = @()
+  foreach ($mp in @($MatProjects)) {
+    foreach ($it in @($mp.items)) {
+      $code = Get-FirstText $it @("bomItemCode", "itemCode", "code", "matchCode", "id")
+      $desc = Get-FirstText $it @("descripcion", "description", "desc", "itemDesc", "nombre", "name")
+      $skuCode = Get-FirstText $it @("skuCode", "catalogCode", "codigoBodega")
+      if ([string]::IsNullOrWhiteSpace($code) -and [string]::IsNullOrWhiteSpace($desc)) { continue }
+      $items += [pscustomobject]@{
+        matProjectId = $mp.id
+        projectName = $mp.name
+        code = $code
+        skuCode = $skuCode
+        desc = $desc
+        raw = $it
+      }
+    }
+  }
+  $items
+}
+
+function Get-BodegaCatalogItems {
+  param([object[]]$Catalog)
+  $items = @()
+  foreach ($sku in @($Catalog)) {
+    $code = Get-FirstText $sku @("code", "skuCode", "id")
+    $legacy = Get-FirstText $sku @("codigoLegacy", "legacyCode", "bomItemCode")
+    $desc = Get-FirstText $sku @("descripcion", "description", "desc", "nombre", "name")
+    $items += [pscustomobject]@{ code = $code; legacy = $legacy; desc = $desc; raw = $sku }
+  }
+  $items
+}
+
+function New-BodegaBomSkuIndex {
+  param([object[]]$BomItems)
+  $byProjectItem = @{}
+  $byItem = @{}
+  foreach ($b in @($BomItems)) {
+    if ([string]::IsNullOrWhiteSpace([string]$b.code)) { continue }
+    if ($b.matProjectId) { $byProjectItem["$($b.matProjectId)|$($b.code)"] = $b }
+    if (-not $byItem.ContainsKey([string]$b.code)) { $byItem[[string]$b.code] = $b }
+  }
+  [pscustomobject]@{ byProjectItem = $byProjectItem; byItem = $byItem }
+}
+
+function Resolve-BodegaBomSku {
+  param([object]$Index, [string]$ProjectId, [string]$ItemCode)
+  if ([string]::IsNullOrWhiteSpace($ItemCode)) { return "" }
+  $bomItem = $null
+  if (-not [string]::IsNullOrWhiteSpace($ProjectId)) {
+    $key = "$ProjectId|$ItemCode"
+    if ($Index.byProjectItem.ContainsKey($key)) { $bomItem = $Index.byProjectItem[$key] }
+  }
+  if ($null -eq $bomItem -and $Index.byItem.ContainsKey($ItemCode)) { $bomItem = $Index.byItem[$ItemCode] }
+  if ($null -eq $bomItem) { return "" }
+  Get-FirstText $bomItem @("skuCode", "catalogCode", "codigoBodega")
+}
+
+function Build-BodegaMaterialesReport {
+  param([object]$Config, [object]$Data, [datetime]$Now)
+  $issues = [System.Collections.ArrayList]::new()
+  $bomItems = @(Get-BodegaBomItems -MatProjects @($Data.mat_projects))
+  $bomSkuIndex = New-BodegaBomSkuIndex -BomItems $bomItems
+  $catalogItems = @(Get-BodegaCatalogItems -Catalog @($Data.inv_catalogo))
+  $bomCodes = New-Object System.Collections.Generic.HashSet[string]
+  foreach ($b in $bomItems) { if ($b.code) { [void]$bomCodes.Add([string]$b.code) } }
+  $catalogCodes = New-Object System.Collections.Generic.HashSet[string]
+  $legacyCodes = New-Object System.Collections.Generic.HashSet[string]
+  foreach ($c in $catalogItems) {
+    if ($c.code) { [void]$catalogCodes.Add([string]$c.code) }
+    if ($c.legacy) { [void]$legacyCodes.Add([string]$c.legacy) }
+  }
+  $ocBomCodes = New-Object System.Collections.Generic.HashSet[string]
+  foreach ($oc in @($Data.mat_ordenes)) {
+    $ocItemCode = Get-FirstText $oc @("bomItemCode", "itemCode", "matchCode", "code")
+    if ($ocItemCode) { [void]$ocBomCodes.Add([string]$ocItemCode) }
+  }
+  $similarThreshold = Get-Number $Config.thresholds.bodega_materiales_similarity_threshold 0.7
+  $dupThreshold = Get-Number $Config.thresholds.bodega_materiales_duplicate_threshold 0.85
+  $deliveryDays = [int](Get-Number $Config.thresholds.bodega_materiales_delivery_days 7)
+  $staleOcDays = [int](Get-Number $Config.thresholds.bodega_materiales_oc_stale_days 30)
+  $priceDiffPct = Get-Number $Config.thresholds.bodega_materiales_price_diff_pct 0.05
+  $today = $Now.Date
+
+  foreach ($oc in @($Data.mat_ordenes)) {
+    $ocId = Get-FirstText $oc @("id", "folio", "ocId")
+    $projectId = Get-FirstText $oc @("matProjectId", "projectId", "proyectoId")
+    $itemCode = Get-FirstText $oc @("bomItemCode", "itemCode", "matchCode", "code")
+    $proveedor = Get-FirstText $oc @("proveedor", "supplierName", "vendor", "razonSocial")
+    $ocSkuCode = Get-FirstText $oc @("skuCode", "catalogCode", "codigoBodega")
+    $bomSkuCode = Resolve-BodegaBomSku -Index $bomSkuIndex -ProjectId $projectId -ItemCode $itemCode
+    $skuCode = if ($ocSkuCode) { $ocSkuCode } else { $bomSkuCode }
+    if ([string]::IsNullOrWhiteSpace($projectId) -or [string]::IsNullOrWhiteSpace($itemCode)) {
+      Add-BodegaIssue $issues (New-BodegaIssue "B-0001" "CRITICO" "Trazabilidad" "OC sin identidad BOM completa" "OC $ocId no tiene matProjectId y bomItemCode trazables." "Carlos" "Regularizar el vinculo OC -> proyecto -> item BOM antes de nuevas recepciones." $ocId)
+    } elseif (-not $bomCodes.Contains($itemCode)) {
+      Add-BodegaIssue $issues (New-BodegaIssue "B-0002" "CRITICO" "Trazabilidad" "OC con item fuera del BOM activo" "OC $ocId usa item $itemCode, pero ese codigo no aparece en los BOM activos leidos." "Carlos" "Corregir itemCode o registrar excepcion autorizada por Carlos." $ocId)
+    }
+    if ([string]::IsNullOrWhiteSpace($skuCode)) {
+      $itemDesc = Get-FirstText $oc @("itemDesc", "descripcion", "description", "nombre", "name")
+      Add-BodegaIssue $issues (New-BodegaIssue "B-0003" "CRITICO" "Trazabilidad" "OC sin SKU candidato de bodega" "OC $ocId no tiene SKU de bodega asociado antes de recepcionar. Proyecto=$projectId ItemBOM=$itemCode Desc='$itemDesc' Proveedor='$proveedor'." "Carlos / Mauricio" "Linkear a SKU candidato antes de recepcion o dejar excepcion autorizada." $ocId)
+    } elseif (-not $catalogCodes.Contains($skuCode)) {
+      $itemDesc = Get-FirstText $oc @("itemDesc", "descripcion", "description", "nombre", "name")
+      $source = if ($ocSkuCode) { "OC" } else { "BOM" }
+      Add-BodegaIssue $issues (New-BodegaIssue "B-0003" "CRITICO" "Trazabilidad" "OC con SKU que no existe en bodega" "OC $ocId resuelve SKU $skuCode desde $source, pero no existe en inv_catalogo. Proyecto=$projectId ItemBOM=$itemCode Desc='$itemDesc'." "Carlos / Mauricio" "Corregir link a SKU existente o crear el codigo real antes de recepcionar." $ocId)
+    }
+    if (-not (Get-FirstText $oc @("cotizId", "cotizacionId", "quoteId"))) {
+      Add-BodegaIssue $issues (New-BodegaIssue "B-D04" "ALTO" "Ordenes de compra" "OC sin cotizacion asociada" "OC $ocId no tiene cotizacion vinculada." "Carlos / Valentina" "Vincular cotizacion formal o justificar compra directa." $ocId)
+    }
+    $proveedor = Get-FirstText $oc @("proveedor", "supplierName", "vendor", "razonSocial")
+    if ($proveedor -match "(?i)cotizaci[oó]n|mayu tx|proveedor|pendiente") {
+      Add-BodegaIssue $issues (New-BodegaIssue "B-D06" "MEDIO" "Ordenes de compra" "OC con proveedor generico" "OC $ocId tiene proveedor '$proveedor'." "Carlos / Valentina" "Identificar proveedor real para trazabilidad y reclamos." $ocId)
+    }
+    $fechaOc = Get-FirstText $oc @("fecha", "createdAt", "fechaOC")
+    $status = [string](Get-FirstText $oc @("status", "estado"))
+    if ($fechaOc) {
+      try {
+        $age = ($today - ([datetime]::Parse($fechaOc)).Date).Days
+        if ($age -gt $staleOcDays -and $status -in @("adjuntada", "emitida", "abierta")) {
+          Add-BodegaIssue $issues (New-BodegaIssue "B-D05" "MEDIO" "Ordenes de compra" "OC antigua sin recepcion" "OC $ocId lleva $age dias en estado $status." "Carlos" "Confirmar entrega proveedor o cerrar/reprogramar OC." $ocId)
+        }
+      } catch {}
+    }
+  }
+
+  foreach ($rec in @($Data.mat_recepciones)) {
+    $recId = Get-FirstText $rec @("id", "recepcionId")
+    $ocId = Get-FirstText $rec @("ocId", "ordenId", "ordenCompraId")
+    $skuCode = Get-FirstText $rec @("skuCode", "catalogCode", "code", "codigoBodega")
+    $itemCode = Get-FirstText $rec @("bomItemCode", "itemCode", "matchCode")
+    if ([string]::IsNullOrWhiteSpace($skuCode)) {
+      Add-BodegaIssue $issues (New-BodegaIssue "B-0003" "CRITICO" "Trazabilidad" "Recepcion sin SKU real de bodega" "Recepcion $recId no tiene SKU real; no entra trazablemente al inventario." "Mauricio" "Linkear recepcion a SKU existente o crear SKU con justificacion y codigoLegacy." $recId)
+    }
+    if ([string]::IsNullOrWhiteSpace($itemCode) -and [string]::IsNullOrWhiteSpace($ocId)) {
+      Add-BodegaIssue $issues (New-BodegaIssue "B-0005" "CRITICO" "Trazabilidad" "Recepcion sin OC ni item BOM" "Recepcion $recId no conserva OC ni item BOM." "Mauricio / Carlos" "Completar ocId y bomItemCode para que el costo llegue al proyecto." $recId)
+    }
+    $precioFactura = Get-Number (Get-FirstText $rec @("precioUnitFactura", "costoUnit", "precioFactura", "precioUnit"))
+    $precioOc = Get-Number (Get-FirstText $rec @("precioUnitOC", "precioUnitOc", "ocPrecioUnit"))
+    if ($precioFactura -gt 0 -and $precioOc -gt 0) {
+      $diff = [Math]::Abs($precioFactura - $precioOc) / [Math]::Max($precioOc, 1)
+      if ($diff -gt $priceDiffPct -and -not $rec.alertaConciliacion) {
+        Add-BodegaIssue $issues (New-BodegaIssue "B-E08" "ALTO" "Recepciones" "Precio factura distinto a OC sin conciliacion" "Recepcion $recId tiene precio factura $precioFactura vs OC $precioOc." "Felix / Valentina / Carlos / Mauricio" "Abrir conciliacion: reclamo, nota de credito, ajuste o aceptar diferencia." $recId)
+      }
+    }
+  }
+
+  $receivedByOc = @{}
+  foreach ($rec in @($Data.mat_recepciones)) {
+    $ocId = Get-FirstText $rec @("ocId", "ordenId", "ordenCompraId")
+    if (-not $ocId) { continue }
+    if (-not $receivedByOc.ContainsKey($ocId)) { $receivedByOc[$ocId] = 0.0 }
+    $receivedByOc[$ocId] += Get-Number (Get-FirstText $rec @("qtyRecibida", "qty", "cantidad"))
+  }
+  foreach ($oc in @($Data.mat_ordenes)) {
+    $ocId = Get-FirstText $oc @("id", "folio", "ocId")
+    $qty = Get-Number (Get-FirstText $oc @("qty", "cantidad", "cantidadPedida"))
+    $status = [string](Get-FirstText $oc @("status", "estado"))
+    $received = if ($receivedByOc.ContainsKey($ocId)) { $receivedByOc[$ocId] } else { 0.0 }
+    if ($qty -gt 0 -and $status -in @("recibida_completa", "completa", "total", "recibida_total") -and $received -lt ($qty * 0.99)) {
+      Add-BodegaIssue $issues (New-BodegaIssue "B-D01" "CRITICO" "Ordenes de compra" "OC completa con recepcion parcial" "OC $ocId esta cerrada como completa, pero recepciones suman $received de $qty." "Carlos / Mauricio" "Cambiar a recepcion parcial y reabrir saldo pendiente." $ocId)
+    }
+  }
+
+  foreach ($mov in @($Data.inv_movimientos)) {
+    if ($mov.anulado -eq $true -or $mov.ignorarAuditoria -eq $true) { continue }
+    if ($mov.stockGeneral -eq $true -or $mov.auditoriaBodegaMaterialesExcepcion -eq $true) { continue }
+    $movId = Get-FirstText $mov @("id", "movementId")
+    $tipo = Get-FirstText $mov @("tipo", "type")
+    $skuCode = Get-FirstText $mov @("skuCode", "code", "itemCode")
+    $projectId = Get-FirstText $mov @("matProjectId", "projectId", "proyectoRef", "proyectoId")
+    $ocId = Get-FirstText $mov @("ocId", "ordenId")
+    $recId = Get-FirstText $mov @("recepcionId", "receiptId")
+    $itemCode = Get-FirstText $mov @("bomItemCode", "itemCode", "matchCode")
+    if ($mov.refDoc) {
+      if (-not $ocId) { $ocId = Get-FirstText $mov.refDoc @("ocId", "ordenId") }
+      if (-not $ocId -and (Get-FirstText $mov.refDoc @("tipo")) -eq "mat_orden") { $ocId = Get-FirstText $mov.refDoc @("id") }
+      if (-not $recId) { $recId = Get-FirstText $mov.refDoc @("recepcionId", "receiptId") }
+      if (-not $itemCode) { $itemCode = Get-FirstText $mov.refDoc @("bomItemCode", "itemCode") }
+    }
+    if ($tipo -in @("recepcion_oc", "ingreso_directo") -and [string]::IsNullOrWhiteSpace($skuCode)) {
+      Add-BodegaIssue $issues (New-BodegaIssue "B-0005" "CRITICO" "Trazabilidad" "Movimiento sin identidad completa" "Movimiento $movId tipo $tipo no conserva proyecto/SKU suficientes." "Mauricio" "Completar trazabilidad en movimiento o corregir recepcion origen." $movId)
+    } elseif ($tipo -eq "recepcion_oc" -and [string]::IsNullOrWhiteSpace($projectId)) {
+      Add-BodegaIssue $issues (New-BodegaIssue "B-0005" "CRITICO" "Trazabilidad" "Movimiento sin proyecto" "Movimiento $movId tipo recepcion_oc no conserva proyecto." "Mauricio" "Completar proyecto desde OC/recepcion origen." $movId)
+    } elseif ($tipo -eq "ingreso_directo" -and [string]::IsNullOrWhiteSpace($projectId)) {
+      Add-BodegaIssue $issues (New-BodegaIssue "B-0005" "ALTO" "Trazabilidad" "Ingreso directo sin proyecto" "Movimiento $movId tipo ingreso_directo tiene SKU, pero no proyecto." "Mauricio / Carlos" "Confirmar si es stock general; si corresponde a proyecto, vincularlo a OC/BOM." $movId)
+    }
+    if ($tipo -eq "recepcion_oc" -and ([string]::IsNullOrWhiteSpace($ocId) -or [string]::IsNullOrWhiteSpace($itemCode))) {
+      Add-BodegaIssue $issues (New-BodegaIssue "B-0005" "CRITICO" "Trazabilidad" "Kardex sin OC/recepcion/BOM" "Movimiento $movId no hereda ocId, recepcionId y bomItemCode." "Mauricio / Felix" "Corregir app para heredar campos y regularizar movimiento." $movId)
+    } elseif ($tipo -eq "recepcion_oc" -and [string]::IsNullOrWhiteSpace($recId)) {
+      Add-BodegaIssue $issues (New-BodegaIssue "B-0005" "ALTO" "Trazabilidad" "Kardex historico sin recepcionId" "Movimiento $movId conserva OC y BOM, pero no tiene recepcionId historico." "Mauricio / Felix" "Mantener como pendiente historico o asociar recepcion si existe evidencia." $movId)
+    }
+    if ($tipo -eq "ingreso_directo") {
+      $desc = Get-FirstText $mov @("descSku", "description", "descripcion", "itemDesc")
+      $similarBom = @($bomItems | Where-Object { (Get-TextSimilarity $desc $_.desc) -ge $similarThreshold } | Select-Object -First 1)
+      if ($similarBom.Count -gt 0) {
+        Add-BodegaIssue $issues (New-BodegaIssue "B-E02" "CRITICO" "Recepciones" "Ingreso directo parece item BOM activo" "Movimiento $movId ingreso_directo '$desc' se parece a BOM $($similarBom[0].code) / $($similarBom[0].projectName)." "Mauricio / Carlos" "Revisar si debio recepcionarse contra OC/BOM en vez de crear identidad paralela." $movId)
+      }
+    }
+  }
+
+  foreach ($c in $catalogItems) {
+    if (-not $c.legacy -and $c.desc) {
+      $similarBom = @($bomItems | Where-Object { (Get-TextSimilarity $c.desc $_.desc) -ge $similarThreshold } | Select-Object -First 1)
+      if ($similarBom.Count -gt 0) {
+        Add-BodegaIssue $issues (New-BodegaIssue "B-0004" "CRITICO" "Trazabilidad" "SKU nuevo similar a BOM sin link" "$($c.code) '$($c.desc)' se parece a BOM $($similarBom[0].code) / $($similarBom[0].projectName), pero no tiene codigoLegacy." "Mauricio / Carlos" "Linkear a BOM existente o justificar SKU nuevo." $c.code)
+      }
+    }
+    $stock = Get-Number $c.raw.stock
+    if ($stock -gt 0 -and -not $c.legacy -and -not $c.raw.refDoc -and -not $c.raw.origen) {
+      Add-BodegaIssue $issues (New-BodegaIssue "B-0006" "ALTO" "Trazabilidad" "SKU con stock sin origen trazable" "$($c.code) tiene stock $stock sin codigoLegacy/origen claro." "Mauricio / Valentina" "Regularizar origen del stock para valorizar y atribuir proyecto." $c.code)
+    }
+    $std = Get-Number $c.raw.costoEstandar
+    $avg = Get-Number $c.raw.costoPromedio
+    if ($std -gt 0 -and $avg -gt 0) {
+      $diff = [Math]::Abs($std - $avg) / [Math]::Max($avg, 1)
+      if ($diff -gt 0.5) {
+        Add-BodegaIssue $issues (New-BodegaIssue "B-A03" "ALTO" "Catalogo" "Costo estandar muy distinto al promedio" "$($c.code): costoEstandar $std vs costoPromedio $avg." "Mauricio / Valentina" "Revisar valorizacion desde factura/guia y kardex." $c.code)
+      }
+    }
+    if ($avg -le 1 -and $stock -gt 0) {
+      Add-BodegaIssue $issues (New-BodegaIssue "B-A05" "MEDIO" "Catalogo" "SKU con costo placeholder y stock" "$($c.code) tiene stock $stock y costoPromedio $avg." "Mauricio / Valentina" "Valorizar desde documento fisico recepcionado." $c.code)
+    }
+  }
+
+  for ($i = 0; $i -lt $catalogItems.Count; $i++) {
+    for ($j = $i + 1; $j -lt $catalogItems.Count; $j++) {
+      if ([string]::IsNullOrWhiteSpace($catalogItems[$i].desc) -or [string]::IsNullOrWhiteSpace($catalogItems[$j].desc)) { continue }
+      if (Test-MeaningfullyDifferentSpecs $catalogItems[$i].desc $catalogItems[$j].desc) { continue }
+      if ((Get-TextSimilarity $catalogItems[$i].desc $catalogItems[$j].desc) -ge $dupThreshold) {
+        Add-BodegaIssue $issues (New-BodegaIssue "B-A04" "ALTO" "Catalogo" "SKUs posiblemente duplicados" "$($catalogItems[$i].code) y $($catalogItems[$j].code) tienen descripciones casi identicas." "Mauricio / Carlos" "Unificar identidad o documentar diferencia fisica." "$($catalogItems[$i].code)|$($catalogItems[$j].code)")
+        if (@($issues | Where-Object { $_.checkId -eq "B-A04" }).Count -ge 10) { break }
+      }
+    }
+  }
+
+  foreach ($b in $bomItems) {
+    $hasStrict = ($b.code -and ($legacyCodes.Contains($b.code) -or $catalogCodes.Contains($b.code))) -or ($b.skuCode -and $catalogCodes.Contains($b.skuCode))
+    if (-not $hasStrict) {
+      $usedInOc = $b.code -and $ocBomCodes.Contains([string]$b.code)
+      if ($usedInOc) {
+        Add-BodegaIssue $issues (New-BodegaIssue "B-B01" "CRITICO" "BOM-Catalogo" "Item BOM sin match estricto en catalogo" "$($b.projectName): $($b.code) '$($b.desc)' no tiene codigoLegacy/code/SKU estricto en catalogo." "Carlos / Mauricio" "Crear o linkear SKU de bodega antes de comprar/recepcionar." "$($b.matProjectId)|$($b.code)")
+      }
+    }
+  }
+
+  foreach ($cot in @($Data.mat_cotizaciones)) {
+    $cotId = Get-FirstText $cot @("id", "cotizId")
+    $file = Get-FirstText $cot @("fileName", "filename", "pdfUrl", "archivo", "documentUrl")
+    if ($file -and $file -match "(?i)\.xlsx?$") {
+      Add-BodegaIssue $issues (New-BodegaIssue "B-C01" "CRITICO" "Cotizaciones" "Cotizacion solo en Excel interno" "Cotizacion $cotId parece Excel, no PDF formal del proveedor." "Carlos / Valentina" "Adjuntar PDF formal con proveedor, RUT, fecha y validez." $cotId)
+    }
+    foreach ($it in @($cot.items)) {
+      $matchCode = Get-FirstText $it @("matchCode", "bomItemCode", "itemCode")
+      $matchScore = Get-Number (Get-FirstText $it @("matchScore", "score"))
+      if ([string]::IsNullOrWhiteSpace($matchCode)) {
+        Add-BodegaIssue $issues (New-BodegaIssue "B-C05" "MEDIO" "Cotizaciones" "Item cotizado sin match BOM" "Cotizacion $cotId tiene item sin matchCode." "Carlos" "Asignar item BOM o descartar linea de cotizacion." $cotId)
+      } elseif ($matchScore -gt 0 -and $matchScore -lt 90) {
+        Add-BodegaIssue $issues (New-BodegaIssue "B-C04" "MEDIO" "Cotizaciones" "Match de cotizacion dudoso" "Cotizacion $cotId item $matchCode tiene matchScore $matchScore." "Carlos" "Validar manualmente match de item cotizado contra BOM." "$cotId|$matchCode")
+      }
+    }
+  }
+
+  foreach ($mp in @($Data.mat_projects)) {
+    $skuCancelados = @()
+    foreach ($x in @($mp.skuCancelados)) { if ($x) { $skuCancelados += [string]$x } }
+    if ($mp.recetaFabInternaPorTipologia -and $mp.recetaFabInternaPorTipologia.skuCancelados) {
+      foreach ($x in @($mp.recetaFabInternaPorTipologia.skuCancelados)) { if ($x) { $skuCancelados += [string]$x } }
+    }
+    foreach ($sku in @($skuCancelados | Select-Object -Unique)) {
+      $hasOc = @($Data.mat_ordenes | Where-Object { (Get-FirstText $_ @("bomItemCode", "itemCode", "matchCode", "code")) -eq $sku }).Count -gt 0
+      if ($hasOc) {
+        Add-BodegaIssue $issues (New-BodegaIssue "B-G03" "ALTO" "Fabricacion interna" "Item fab interna con OC externa" "$($mp.name): $sku esta en skuCancelados pero tiene OC." "Martin / Carlos" "Decidir si se fabrica o se compra; no ambos." "$($mp.id)|$sku")
+      }
+    }
+  }
+
+  foreach ($ent in @($Data.mat_entregas)) {
+    $entId = Get-FirstText $ent @("id", "entregaId")
+    $skuCode = Get-FirstText $ent @("skuCode", "itemCode", "code")
+    $projectId = Get-FirstText $ent @("matProjectId", "projectId", "proyectoId")
+    $podNum = Get-FirstText $ent @("podNum", "pod", "unitCode")
+    $tipologia = Get-FirstText $ent @("tipologia", "tipo")
+    if ([string]::IsNullOrWhiteSpace($skuCode) -or [string]::IsNullOrWhiteSpace($projectId)) {
+      Add-BodegaIssue $issues (New-BodegaIssue "B-0007" "CRITICO" "Entregas a fabrica" "Entrega sin trazabilidad a SKU/proyecto" "Entrega $entId no conserva SKU o proyecto." "Carlos / Mauricio" "Regularizar entrega para atribuir consumo a proyecto/POD." $entId)
+    }
+    if ([string]::IsNullOrWhiteSpace($podNum) -or [string]::IsNullOrWhiteSpace($tipologia)) {
+      Add-BodegaIssue $issues (New-BodegaIssue "B-F03" "MEDIO" "Entregas a fabrica" "Entrega sin POD o tipologia" "Entrega $entId no tiene POD/tipologia completos." "Mauricio" "Completar POD y tipologia para consumo real por unidad." $entId)
+    }
+    if ($ent.esMerma -eq $true -and -not (Get-FirstText $ent @("motivoMerma", "nota", "observacion"))) {
+      Add-BodegaIssue $issues (New-BodegaIssue "B-F02" "ALTO" "Entregas a fabrica" "Merma sin motivo" "Entrega $entId marcada como merma no tiene motivo documentado." "Mauricio / Carlos" "Documentar causa de merma y responsable." $entId)
+    }
+  }
+
+  $deliveryKeys = New-Object System.Collections.Generic.HashSet[string]
+  foreach ($ent in @($Data.mat_entregas)) {
+    $sku = Get-FirstText $ent @("skuCode", "itemCode", "code")
+    $proj = Get-FirstText $ent @("matProjectId", "projectId", "proyectoId")
+    if ($sku -and $proj) { [void]$deliveryKeys.Add("$proj|$sku") }
+  }
+  foreach ($rec in @($Data.mat_recepciones)) {
+    $recId = Get-FirstText $rec @("id", "recepcionId")
+    $sku = Get-FirstText $rec @("skuCode", "catalogCode", "code", "codigoBodega")
+    $proj = Get-FirstText $rec @("matProjectId", "projectId", "proyectoId")
+    $dateText = Get-FirstText $rec @("fecha", "createdAt", "fechaRecepcion")
+    if (-not $sku -or -not $proj -or -not $dateText) { continue }
+    try {
+      $age = ($today - ([datetime]::Parse($dateText)).Date).Days
+      if ($age -gt $deliveryDays -and -not $deliveryKeys.Contains("$proj|$sku")) {
+        Add-BodegaIssue $issues (New-BodegaIssue "B-F01" "CRITICO" "Entregas a fabrica" "Recepcion sin entrega formal" "Recepcion $recId / SKU $sku lleva $age dias sin entrega formal a fabrica." "Carlos / Mauricio" "Registrar entrega formal o justificar stock retenido." $recId)
+      }
+    } catch {}
+  }
+
+  $selected = @(Select-UniqueIssues -Issues @($issues))
+  [pscustomobject]@{
+    generatedAt = $Now.ToString("o")
+    date = $Now.ToString("yyyy-MM-dd")
+    summary = [pscustomobject]@{
+      criticas = @($selected | Where-Object { $_.level -eq "CRITICO" }).Count
+      altas = @($selected | Where-Object { $_.level -eq "ALTO" }).Count
+      medias = @($selected | Where-Object { $_.level -eq "MEDIO" }).Count
+      bajas = @($selected | Where-Object { $_.level -eq "BAJO" }).Count
+      total = @($selected).Count
+    }
+    blocks = [pscustomobject]@{
+      trazabilidad = @($selected | Where-Object { $_.block -eq "Trazabilidad" })
+      catalogo = @($selected | Where-Object { $_.block -eq "Catalogo" })
+      bomCatalogo = @($selected | Where-Object { $_.block -eq "BOM-Catalogo" })
+      cotizaciones = @($selected | Where-Object { $_.block -eq "Cotizaciones" })
+      ordenesCompra = @($selected | Where-Object { $_.block -eq "Ordenes de compra" })
+      recepciones = @($selected | Where-Object { $_.block -eq "Recepciones" })
+      entregasFabrica = @($selected | Where-Object { $_.block -eq "Entregas a fabrica" })
+      fabricacionInterna = @($selected | Where-Object { $_.block -eq "Fabricacion interna" })
+    }
+    issues = $selected
+  }
+}
+
+function Write-BodegaPprPvcCandidates {
+  param([object]$Data)
+  $catalogItems = @(Get-BodegaCatalogItems -Catalog @($Data.inv_catalogo))
+  $bomItems = @(Get-BodegaBomItems -MatProjects @($Data.mat_projects))
+  $bomSkuIndex = New-BodegaBomSkuIndex -BomItems $bomItems
+  $targets = @()
+  foreach ($oc in @($Data.mat_ordenes)) {
+    $projectId = Get-FirstText $oc @("matProjectId", "projectId", "proyectoId")
+    $itemCode = Get-FirstText $oc @("bomItemCode", "itemCode", "matchCode", "code")
+    $skuCode = Get-FirstText $oc @("skuCode", "catalogCode", "codigoBodega")
+    if (-not $skuCode) { $skuCode = Resolve-BodegaBomSku -Index $bomSkuIndex -ProjectId $projectId -ItemCode $itemCode }
+    if ($skuCode) { continue }
+    $desc = Get-FirstText $oc @("itemDesc", "descripcion", "description", "nombre", "name")
+    if ($desc -notmatch "(?i)\b(PPR|PVC|ABRAZADERA|TUBER|CODO|COPLA|TEE|TERMINAL|LLAVE DE PASO)\b") { continue }
+    $targets += [pscustomobject]@{
+      oc = Get-FirstText $oc @("id", "folio", "ocId")
+      item = $itemCode
+      desc = $desc
+      proveedor = Get-FirstText $oc @("proveedor", "supplierName", "vendor", "razonSocial")
+      project = $projectId
+    }
+  }
+  Write-Output "Bodega+Materiales PPR/PVC: targets=$($targets.Count)"
+  foreach ($target in @($targets | Select-Object -First 80)) {
+    $candidates = @(
+      $catalogItems | ForEach-Object {
+        $score = Get-TextSimilarity $target.desc $_.desc
+        $bonus = 0.0
+        if ($_.legacy -and $target.item -and $_.legacy -eq $target.item) { $bonus += 1.0 }
+        if ($_.code -and $target.item -and $_.code -eq $target.item) { $bonus += 1.0 }
+        if ($target.desc -match "(?i)PPR" -and $_.desc -match "(?i)PPR") { $bonus += 0.2 }
+        if ($target.desc -match "(?i)PVC" -and $_.desc -match "(?i)PVC") { $bonus += 0.2 }
+        [pscustomobject]@{
+          score = $score + $bonus
+          code = $_.code
+          legacy = $_.legacy
+          desc = $_.desc
+          stock = Get-Number $_.raw.stock
+          costo = Get-Number $_.raw.costoPromedio
+        }
+      } | Sort-Object score -Descending | Select-Object -First 5
+    )
+    $candidateText = (@($candidates) | ForEach-Object {
+      "$($_.code)|legacy=$($_.legacy)|stock=$($_.stock)|score=$([Math]::Round($_.score,2))|$($_.desc)"
+    }) -join " || "
+    Write-Output "Bodega+Materiales PPR/PVC candidate: oc=$($target.oc) item=$($target.item) desc=$($target.desc) proveedor=$($target.proveedor) :: $candidateText"
+  }
+}
+
+function Render-BodegaMaterialesHtml {
+  param([object]$Report)
+  $s = $Report.summary
+  $rows = Render-IssueList -Items @($Report.issues | Select-Object -First 80)
+  @"
+<html>
+<body style="font-family:Arial,sans-serif;color:#222;max-width:980px;font-size:14px;">
+  <h2 style="margin-bottom:4px;">Agente Bodega + Materiales - $($Report.date)</h2>
+  <p style="margin-top:0;color:#555;">Criticas: <strong style="color:#991b1b;">$($s.criticas)</strong> · Altas: <strong style="color:#9a3412;">$($s.altas)</strong> · Medias: <strong>$($s.medias)</strong> · Bajas: <strong>$($s.bajas)</strong></p>
+  <h3>Alertas</h3>
+  $rows
+  <p style="font-size:12px;color:#777;">Destinatarios productivos esperados: Felix, Valentina, Carlos y Mauricio. Este HTML es evidencia del agente; el envio queda controlado por SendEmail.</p>
+</body>
+</html>
+"@
+}
+
+function Invoke-BodegaMateriales {
+  param([object]$Config, [string]$GraphToken, [string]$SiteId, [datetime]$Now, [bool]$DoSendEmail)
+  Write-Output "Bodega+Materiales: leyendo Firestore."
+  $data = Get-FirestoreData -Config $Config
+  $report = Build-BodegaMaterialesReport -Config $Config -Data $data -Now $Now
+  Write-BodegaPprPvcCandidates -Data $data
+  Write-Output "Bodega+Materiales: resumen criticas=$($report.summary.criticas) altas=$($report.summary.altas) medias=$($report.summary.medias) bajas=$($report.summary.bajas) total=$($report.summary.total)."
+  foreach ($group in @($report.issues | Group-Object checkId | Sort-Object Count -Descending | Select-Object -First 20)) {
+    Write-Output "Bodega+Materiales breakdown: $($group.Name)=$($group.Count)"
+  }
+  foreach ($group in @($report.issues | Group-Object checkId | Sort-Object Count -Descending | Select-Object -First 12)) {
+    foreach ($issue in @($group.Group | Select-Object -First 5)) {
+      Write-Output "Bodega+Materiales ejemplo $($group.Name): [$($issue.level)] ref=$($issue.ref) detalle=$($issue.detail) accion=$($issue.action)"
+    }
+  }
+  foreach ($issue in @($report.issues | Where-Object { $_.checkId -eq "B-0003" } | Select-Object -First 200)) {
+    Write-Output "Bodega+Materiales B-0003 full: ref=$($issue.ref) detalle=$($issue.detail)"
+  }
+  foreach ($issue in @($report.issues | Select-Object -First 25)) {
+    Write-Output "Bodega+Materiales alerta: [$($issue.level)] $($issue.checkId) $($issue.title) | $($issue.ref) | $($issue.action)"
+  }
+  $html = Render-BodegaMaterialesHtml -Report $report
+  $dateKey = $report.date
+  Ensure-GraphFolder -Token $GraphToken -SiteId $SiteId -FolderPath $Config.sharepoint.bodega_materiales_folder
+  Write-TextFileToGraph -Token $GraphToken -SiteId $SiteId -FilePath "$($Config.sharepoint.bodega_materiales_folder)/$dateKey.json" -Text ($report | ConvertTo-Json -Depth 80) -ContentType "application/json; charset=utf-8"
+  Write-TextFileToGraph -Token $GraphToken -SiteId $SiteId -FilePath "$($Config.sharepoint.bodega_materiales_folder)/$dateKey.html" -Text $html -ContentType "text/html; charset=utf-8"
+  if ($DoSendEmail) {
+    $to = @($Config.mail.felix, $Config.mail.valentina, $Config.mail.carlos, $Config.mail.mauricio)
+    $subject = "[Bodega-Materiales] Alertas $dateKey - $($report.summary.criticas) CRITICAS, $($report.summary.altas) ALTAS"
+    Send-GraphMail -Token $GraphToken -Sender $Config.mail.sender -To $to -Cc @() -Subject $subject -HtmlBody $html
+    Write-Output "Bodega+Materiales: correo enviado."
+  } else {
+    Write-Output "Bodega+Materiales: SendEmail=false, no se envia correo."
+  }
+  Write-Output "Bodega+Materiales: outputs guardados en SharePoint."
+}
+
 function Get-FinanceIssues {
   param([object]$Config, [object]$Data, [datetime]$Now)
   $issues = [System.Collections.ArrayList]::new()
@@ -963,4 +1489,6 @@ if ($Mode -eq "test") {
   }
 } elseif ($Mode -eq "daily_pulse") {
   Invoke-DailyPulse -Config $config -GraphToken $graphToken -SiteId $siteId -Now $now -DoSendEmail $SendEmail
+} elseif ($Mode -eq "bodega_materiales") {
+  Invoke-BodegaMateriales -Config $config -GraphToken $graphToken -SiteId $siteId -Now $now -DoSendEmail $SendEmail
 }
