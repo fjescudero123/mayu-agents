@@ -793,10 +793,36 @@ function Get-BodegaCatalogItems {
   $items
 }
 
+function New-BodegaBomSkuIndex {
+  param([object[]]$BomItems)
+  $byProjectItem = @{}
+  $byItem = @{}
+  foreach ($b in @($BomItems)) {
+    if ([string]::IsNullOrWhiteSpace([string]$b.code)) { continue }
+    if ($b.matProjectId) { $byProjectItem["$($b.matProjectId)|$($b.code)"] = $b }
+    if (-not $byItem.ContainsKey([string]$b.code)) { $byItem[[string]$b.code] = $b }
+  }
+  [pscustomobject]@{ byProjectItem = $byProjectItem; byItem = $byItem }
+}
+
+function Resolve-BodegaBomSku {
+  param([object]$Index, [string]$ProjectId, [string]$ItemCode)
+  if ([string]::IsNullOrWhiteSpace($ItemCode)) { return "" }
+  $bomItem = $null
+  if (-not [string]::IsNullOrWhiteSpace($ProjectId)) {
+    $key = "$ProjectId|$ItemCode"
+    if ($Index.byProjectItem.ContainsKey($key)) { $bomItem = $Index.byProjectItem[$key] }
+  }
+  if ($null -eq $bomItem -and $Index.byItem.ContainsKey($ItemCode)) { $bomItem = $Index.byItem[$ItemCode] }
+  if ($null -eq $bomItem) { return "" }
+  Get-FirstText $bomItem @("skuCode", "catalogCode", "codigoBodega")
+}
+
 function Build-BodegaMaterialesReport {
   param([object]$Config, [object]$Data, [datetime]$Now)
   $issues = [System.Collections.ArrayList]::new()
   $bomItems = @(Get-BodegaBomItems -MatProjects @($Data.mat_projects))
+  $bomSkuIndex = New-BodegaBomSkuIndex -BomItems $bomItems
   $catalogItems = @(Get-BodegaCatalogItems -Catalog @($Data.inv_catalogo))
   $bomCodes = New-Object System.Collections.Generic.HashSet[string]
   foreach ($b in $bomItems) { if ($b.code) { [void]$bomCodes.Add([string]$b.code) } }
@@ -817,7 +843,10 @@ function Build-BodegaMaterialesReport {
     $ocId = Get-FirstText $oc @("id", "folio", "ocId")
     $projectId = Get-FirstText $oc @("matProjectId", "projectId", "proyectoId")
     $itemCode = Get-FirstText $oc @("bomItemCode", "itemCode", "matchCode", "code")
-    $skuCode = Get-FirstText $oc @("skuCode", "catalogCode", "codigoBodega")
+    $proveedor = Get-FirstText $oc @("proveedor", "supplierName", "vendor", "razonSocial")
+    $ocSkuCode = Get-FirstText $oc @("skuCode", "catalogCode", "codigoBodega")
+    $bomSkuCode = Resolve-BodegaBomSku -Index $bomSkuIndex -ProjectId $projectId -ItemCode $itemCode
+    $skuCode = if ($ocSkuCode) { $ocSkuCode } else { $bomSkuCode }
     if ([string]::IsNullOrWhiteSpace($projectId) -or [string]::IsNullOrWhiteSpace($itemCode)) {
       Add-BodegaIssue $issues (New-BodegaIssue "B-0001" "CRITICO" "Trazabilidad" "OC sin identidad BOM completa" "OC $ocId no tiene matProjectId y bomItemCode trazables." "Carlos" "Regularizar el vinculo OC -> proyecto -> item BOM antes de nuevas recepciones." $ocId)
     } elseif (-not $bomCodes.Contains($itemCode)) {
@@ -826,6 +855,10 @@ function Build-BodegaMaterialesReport {
     if ([string]::IsNullOrWhiteSpace($skuCode)) {
       $itemDesc = Get-FirstText $oc @("itemDesc", "descripcion", "description", "nombre", "name")
       Add-BodegaIssue $issues (New-BodegaIssue "B-0003" "CRITICO" "Trazabilidad" "OC sin SKU candidato de bodega" "OC $ocId no tiene SKU de bodega asociado antes de recepcionar. Proyecto=$projectId ItemBOM=$itemCode Desc='$itemDesc' Proveedor='$proveedor'." "Carlos / Mauricio" "Linkear a SKU candidato antes de recepcion o dejar excepcion autorizada." $ocId)
+    } elseif (-not $catalogCodes.Contains($skuCode)) {
+      $itemDesc = Get-FirstText $oc @("itemDesc", "descripcion", "description", "nombre", "name")
+      $source = if ($ocSkuCode) { "OC" } else { "BOM" }
+      Add-BodegaIssue $issues (New-BodegaIssue "B-0003" "CRITICO" "Trazabilidad" "OC con SKU que no existe en bodega" "OC $ocId resuelve SKU $skuCode desde $source, pero no existe en inv_catalogo. Proyecto=$projectId ItemBOM=$itemCode Desc='$itemDesc'." "Carlos / Mauricio" "Corregir link a SKU existente o crear el codigo real antes de recepcionar." $ocId)
     }
     if (-not (Get-FirstText $oc @("cotizId", "cotizacionId", "quoteId"))) {
       Add-BodegaIssue $issues (New-BodegaIssue "B-D04" "ALTO" "Ordenes de compra" "OC sin cotizacion asociada" "OC $ocId no tiene cotizacion vinculada." "Carlos / Valentina" "Vincular cotizacion formal o justificar compra directa." $ocId)
@@ -1052,18 +1085,23 @@ function Build-BodegaMaterialesReport {
 function Write-BodegaPprPvcCandidates {
   param([object]$Data)
   $catalogItems = @(Get-BodegaCatalogItems -Catalog @($Data.inv_catalogo))
+  $bomItems = @(Get-BodegaBomItems -MatProjects @($Data.mat_projects))
+  $bomSkuIndex = New-BodegaBomSkuIndex -BomItems $bomItems
   $targets = @()
   foreach ($oc in @($Data.mat_ordenes)) {
+    $projectId = Get-FirstText $oc @("matProjectId", "projectId", "proyectoId")
+    $itemCode = Get-FirstText $oc @("bomItemCode", "itemCode", "matchCode", "code")
     $skuCode = Get-FirstText $oc @("skuCode", "catalogCode", "codigoBodega")
+    if (-not $skuCode) { $skuCode = Resolve-BodegaBomSku -Index $bomSkuIndex -ProjectId $projectId -ItemCode $itemCode }
     if ($skuCode) { continue }
     $desc = Get-FirstText $oc @("itemDesc", "descripcion", "description", "nombre", "name")
     if ($desc -notmatch "(?i)\b(PPR|PVC|ABRAZADERA|TUBER|CODO|COPLA|TEE|TERMINAL|LLAVE DE PASO)\b") { continue }
     $targets += [pscustomobject]@{
       oc = Get-FirstText $oc @("id", "folio", "ocId")
-      item = Get-FirstText $oc @("bomItemCode", "itemCode", "matchCode", "code")
+      item = $itemCode
       desc = $desc
       proveedor = Get-FirstText $oc @("proveedor", "supplierName", "vendor", "razonSocial")
-      project = Get-FirstText $oc @("matProjectId", "projectId", "proyectoId")
+      project = $projectId
     }
   }
   Write-Output "Bodega+Materiales PPR/PVC: targets=$($targets.Count)"
