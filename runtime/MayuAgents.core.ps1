@@ -165,6 +165,20 @@ function Set-GraphMailRead {
   } | Out-Null
 }
 
+function Disable-GraphMailboxAutoReplies {
+  param([string]$Token, [string]$Mailbox)
+  try {
+    Invoke-GraphJson -Token $Token -Method Patch -Uri "https://graph.microsoft.com/v1.0/users/$Mailbox/mailboxSettings" -Body @{
+      automaticRepliesSetting = @{
+        status = "disabled"
+      }
+    } | Out-Null
+    Write-Output "Mailbox ${Mailbox}: respuestas automaticas desactivadas."
+  } catch {
+    Write-Output "Mailbox ${Mailbox}: no se pudieron desactivar respuestas automaticas ($($_.Exception.Message))."
+  }
+}
+
 function Get-Mayutime {
   param([string]$TimeZoneName)
   $candidateIds = @($TimeZoneName, "Pacific SA Standard Time", "Chile Standard Time")
@@ -1314,6 +1328,7 @@ function Render-BodegaHelpReplyHtml {
 function Invoke-BodegaMaterialesResponder {
   param([object]$Config, [string]$GraphToken, [string]$SiteId, [datetime]$Now)
   $mailbox = [string]$Config.mail.sender
+  Disable-GraphMailboxAutoReplies -Token $GraphToken -Mailbox $mailbox
   $stateFile = "$($Config.sharepoint.bodega_materiales_folder)/responder_procesados.json"
   Ensure-GraphFolder -Token $GraphToken -SiteId $SiteId -FolderPath $Config.sharepoint.bodega_materiales_folder
   $stateText = Read-TextFileFromGraph -Token $GraphToken -SiteId $SiteId -FilePath $stateFile
