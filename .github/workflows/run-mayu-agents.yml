@@ -10,6 +10,9 @@ on:
         default: "daily_pulse"
         options:
           - daily_pulse
+          - biblia_proyecto
+          - traspaso_control_operacion
+          - bodega_materiales
           - test
       date:
         description: "Fecha YYYY-MM-DD"

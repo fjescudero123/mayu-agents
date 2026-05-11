@@ -12,6 +12,7 @@
     "pulso_folder": "agentes_mayu/pulso_gerencial",
     "biblia_folder": "agentes_mayu/biblia_proyecto",
     "traspaso_folder": "agentes_mayu/traspaso_control_operacion",
+    "bodega_materiales_folder": "agentes_mayu/bodega_materiales",
     "minutas_seguimiento_folder": "minutas_archivadas/seguimiento_compromisos",
     "links": {
       "hub": "https://mayu-hub.netlify.app/",
@@ -26,7 +27,9 @@
   "mail": {
     "sender": "notificaciones@imayu.cl",
     "felix": "fjescudero@imayu.cl",
-    "valentina": "vescudero@imayu.cl"
+    "valentina": "vescudero@imayu.cl",
+    "carlos": "clecaros@imayu.cl",
+    "mauricio": "mhernandez@imayu.cl"
   },
   "collections": {
     "chk_projects": "chk_projects",
@@ -34,8 +37,10 @@
     "crm_plan": "plan",
     "crm_billing": "billing",
     "mat_projects": "mat_projects",
+    "mat_cotizaciones": "mat_cotizaciones",
     "mat_ordenes": "mat_ordenes",
     "mat_recepciones": "mat_recepciones",
+    "mat_entregas": "mat_entregas",
     "inv_catalogo": "inv_catalogo",
     "inv_movimientos": "inv_movimientos",
     "inv_solicitudes": "inv_solicitudes",
@@ -71,7 +76,12 @@
     "ar_overdue_days": 0,
     "max_items_per_section": 12,
     "max_finance_overdue_items": 8,
-    "max_inventory_examples": 8
+    "max_inventory_examples": 8,
+    "bodega_materiales_similarity_threshold": 0.7,
+    "bodega_materiales_duplicate_threshold": 0.85,
+    "bodega_materiales_delivery_days": 7,
+    "bodega_materiales_oc_stale_days": 30,
+    "bodega_materiales_price_diff_pct": 0.05
   },
   "agents": {
     "pulso_gerencial_diario": {
@@ -83,6 +93,10 @@
     },
     "traspaso_control_operacion": {
       "enabled": true
+    },
+    "bodega_materiales": {
+      "enabled": true,
+      "send_email_default": false
     }
   }
 }
