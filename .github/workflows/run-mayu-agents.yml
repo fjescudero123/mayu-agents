@@ -11,6 +11,7 @@ on:
         options:
           - daily_pulse
           - bodega_materiales
+          - bodega_materiales_respuestas
           - test
       date:
         description: "Fecha YYYY-MM-DD"
@@ -26,6 +27,8 @@ on:
     - cron: "0 12 * * 1-5"
     # Lunes a viernes 12:15 UTC (~08:15 Chile horario actual). Agente Bodega + Materiales.
     - cron: "15 12 * * 1-5"
+    # Lunes a viernes, cada 15 minutos en horario laboral Chile. Respuestas a dudas del correo Bodega + Materiales.
+    - cron: "*/15 12-22 * * 1-5"
 
 permissions:
   contents: read
@@ -62,6 +65,8 @@ jobs:
           } else {
             if ("${{ github.event.schedule }}" -eq "15 12 * * 1-5") {
               $mode = "bodega_materiales"
+            } elseif ("${{ github.event.schedule }}" -eq "*/15 12-22 * * 1-5") {
+              $mode = "bodega_materiales_respuestas"
             } else {
               $mode = "daily_pulse"
             }

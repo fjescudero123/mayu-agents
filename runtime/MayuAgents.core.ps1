@@ -1,5 +1,5 @@
 param(
-  [ValidateSet("daily_pulse", "bodega_materiales", "test")]
+  [ValidateSet("daily_pulse", "bodega_materiales", "bodega_materiales_respuestas", "test")]
   [string]$Mode = "daily_pulse",
   [string]$Date = "",
   [bool]$SendEmail = $true
@@ -112,6 +112,19 @@ function Write-TextFileToGraph {
   Invoke-GraphPutBytes -Token $Token -Uri $uri -Bytes $bytes -ContentType $ContentType | Out-Null
 }
 
+function Read-TextFileFromGraph {
+  param([string]$Token, [string]$SiteId, [string]$FilePath)
+  $encoded = ConvertTo-DrivePath $FilePath
+  $uri = "https://graph.microsoft.com/v1.0/sites/$SiteId/drive/root:/$encoded" + ":/content"
+  try {
+    $result = Invoke-GraphGet -Token $Token -Uri $uri
+    if ($result -is [string]) { return $result }
+    return ($result | ConvertTo-Json -Depth 20)
+  } catch {
+    return ""
+  }
+}
+
 function Send-GraphMail {
   param(
     [string]$Token,
@@ -130,6 +143,25 @@ function Send-GraphMail {
   Invoke-GraphJson -Token $Token -Method Post -Uri "https://graph.microsoft.com/v1.0/users/$Sender/sendMail" -Body @{
     message = $message
     saveToSentItems = $true
+  } | Out-Null
+}
+
+function Reply-GraphMail {
+  param(
+    [string]$Token,
+    [string]$Mailbox,
+    [string]$MessageId,
+    [string]$HtmlBody
+  )
+  Invoke-GraphJson -Token $Token -Method Post -Uri "https://graph.microsoft.com/v1.0/users/$Mailbox/messages/$MessageId/reply" -Body @{
+    comment = $HtmlBody
+  } | Out-Null
+}
+
+function Set-GraphMailRead {
+  param([string]$Token, [string]$Mailbox, [string]$MessageId)
+  Invoke-GraphJson -Token $Token -Method Patch -Uri "https://graph.microsoft.com/v1.0/users/$Mailbox/messages/$MessageId" -Body @{
+    isRead = $true
   } | Out-Null
 }
 
@@ -1066,6 +1098,9 @@ function Render-BodegaMaterialesHtml {
 <body style="font-family:Arial,sans-serif;color:#222;max-width:980px;font-size:14px;">
   <h2 style="margin-bottom:4px;">Agente Bodega + Materiales - $($Report.date)</h2>
   <p style="margin-top:0;color:#555;">Criticas: <strong style="color:#991b1b;">$($s.criticas)</strong> · Altas: <strong style="color:#9a3412;">$($s.altas)</strong> · Medias: <strong>$($s.medias)</strong> · Bajas: <strong>$($s.bajas)</strong></p>
+  <p style="background:#f7fafc;border-left:4px solid #2563eb;padding:10px 12px;">
+    Puedes responder este correo con preguntas como <strong>"como resuelvo B-D06"</strong>, <strong>"explicame B-A05"</strong> o copiando una alerta. El agente respondera solo con explicacion operativa y pasos manuales en las apps.
+  </p>
   <h3>Alertas</h3>
   $rows
   <p style="font-size:12px;color:#777;">Destinatarios productivos esperados: Felix, Valentina, Carlos y Mauricio. Este HTML es evidencia del agente; el envio queda controlado por SendEmail.</p>
@@ -1109,6 +1144,210 @@ function Invoke-BodegaMateriales {
     Write-Output "Bodega+Materiales: SendEmail=false, no se envia correo."
   }
   Write-Output "Bodega+Materiales: outputs guardados en SharePoint."
+}
+
+function Get-BodegaHelpDefinition {
+  param([string]$CheckId)
+  switch ($CheckId) {
+    "B-D06" {
+      [pscustomobject]@{
+        title = "B-D06 - Proveedor mal nombrado"
+        problem = "La OC tiene como proveedor un texto tipo 'Cotizacion ...' en vez del proveedor real. Esto dificulta reclamos, trazabilidad y analisis de compras."
+        steps = @(
+          "Entrar a la app Materiales.",
+          "Abrir Ordenes de compra y buscar la OC indicada.",
+          "Editar el proveedor para dejar el nombre real: por ejemplo Hoffens, Gobantes, CHC, APSA, StrongTie, Steelfix o Sodimac.",
+          "Guardar la OC. No cambiar cantidades, precios ni recepciones."
+        )
+      }
+    }
+    "B-A04" {
+      [pscustomobject]@{
+        title = "B-A04 - Posibles SKUs duplicados"
+        problem = "Hay dos codigos de bodega con descripciones muy parecidas. El riesgo es comprar o descontar stock desde identidades distintas para el mismo producto."
+        steps = @(
+          "Entrar a la app Bodega.",
+          "Buscar ambos codigos SKU indicados en la alerta.",
+          "Comparar medida, material, marca y uso real en bodega.",
+          "Si son el mismo producto, dejar un SKU activo y mover/regularizar stock al codigo correcto.",
+          "Si son distintos, ajustar la descripcion para que la diferencia quede clara."
+        )
+      }
+    }
+    "B-A05" {
+      [pscustomobject]@{
+        title = "B-A05 - SKU con stock y costo cero"
+        problem = "El producto tiene stock, pero costo promedio cero. Eso distorsiona el costo de proyecto y el inventario valorizado."
+        steps = @(
+          "Entrar a la app Bodega.",
+          "Buscar el SKU indicado.",
+          "Revisar la recepcion, factura o guia asociada.",
+          "Actualizar costo promedio o costo unitario segun el documento real.",
+          "Si no existe documento, dejar pendiente para Valentina/Mauricio antes de usarlo en costos."
+        )
+      }
+    }
+    "B-C01" {
+      [pscustomobject]@{
+        title = "B-C01 - Cotizacion Excel sin PDF formal"
+        problem = "La compra se apoya solo en Excel interno. MAYU necesita cotizacion formal del proveedor para respaldo y aprobacion."
+        steps = @(
+          "Entrar a la app Materiales.",
+          "Abrir Cotizaciones y buscar el codigo COT indicado.",
+          "Adjuntar PDF formal del proveedor con razon social, fecha, precios y validez.",
+          "No marcar excepcion: la regla exige cotizacion formal."
+        )
+      }
+    }
+    "B-C04" {
+      [pscustomobject]@{
+        title = "B-C04 - Match dudoso entre cotizacion y BOM"
+        problem = "La linea cotizada fue asociada a un item BOM con baja confianza. Puede estar comprandose algo parecido, pero no exactamente lo pedido."
+        steps = @(
+          "Entrar a la app Materiales.",
+          "Abrir la cotizacion indicada.",
+          "Comparar descripcion cotizada contra descripcion del item BOM.",
+          "Si corresponde, confirmar o corregir el item BOM asociado.",
+          "Si no corresponde, reasignar la linea al BOM correcto o descartarla."
+        )
+      }
+    }
+    "B-C05" {
+      [pscustomobject]@{
+        title = "B-C05 - Item de cotizacion sin match BOM"
+        problem = "Hay una linea cotizada que no esta asociada a ningun item del BOM. Si se compra asi, despues no se puede cargar bien al proyecto."
+        steps = @(
+          "Entrar a la app Materiales.",
+          "Abrir la cotizacion indicada.",
+          "Buscar la linea sin match.",
+          "Asignarla al item BOM correcto.",
+          "Si la linea no corresponde al proyecto, eliminarla o dejarla fuera de la cotizacion."
+        )
+      }
+    }
+    "B-0004" {
+      [pscustomobject]@{
+        title = "B-0004 - SKU nuevo parecido a BOM sin link"
+        problem = "Existe un SKU de bodega parecido a un item BOM, pero no esta linkeado. Puede crear identidad paralela entre compra, recepcion y bodega."
+        steps = @(
+          "Entrar a la app Bodega.",
+          "Buscar el SKU indicado.",
+          "Compararlo con el item BOM sugerido.",
+          "Si es el mismo producto, completar codigoLegacy o link al BOM.",
+          "Si es distinto, mejorar la descripcion o justificar el SKU nuevo."
+        )
+      }
+    }
+    "B-0003" {
+      [pscustomobject]@{
+        title = "B-0003 - OC sin SKU real de bodega"
+        problem = "La OC apunta a un item BOM, pero no tiene SKU real de bodega. Antes de recepcionar, debe existir el codigo de bodega correcto."
+        steps = @(
+          "Entrar a la app Materiales.",
+          "Abrir la OC indicada.",
+          "Revisar item BOM y descripcion del producto.",
+          "Buscar si ya existe SKU en Bodega.",
+          "Si existe, linkearlo a la OC/BOM. Si no existe, crear el SKU en Bodega y luego linkearlo."
+        )
+      }
+    }
+    "B-B01" {
+      [pscustomobject]@{
+        title = "B-B01 - BOM usado en OC sin SKU"
+        problem = "Un item del BOM ya fue usado en una OC, pero todavia no tiene match estricto con SKU de bodega."
+        steps = @(
+          "Entrar a la app Materiales.",
+          "Buscar el item BOM indicado.",
+          "Buscar o crear el SKU real en Bodega.",
+          "Linkear el item BOM al SKU antes de nuevas recepciones.",
+          "Verificar que la OC quede apuntando al mismo SKU."
+        )
+      }
+    }
+    default {
+      [pscustomobject]@{
+        title = "Agente Bodega + Materiales"
+        problem = "Puedo explicar solo alertas de Bodega + Materiales y pasos manuales en las apps."
+        steps = @(
+          "Responde indicando el codigo de alerta: B-D06, B-A04, B-A05, B-C01, B-C04, B-C05, B-0004, B-0003 o B-B01.",
+          "Tambien puedes copiar una linea completa de la alerta.",
+          "No ejecuto cambios desde el correo; solo explico el problema y como resolverlo manualmente."
+        )
+      }
+    }
+  }
+}
+
+function Resolve-BodegaHelpCheckId {
+  param([string]$Text)
+  $m = [regex]::Match($Text, "(?i)\bB-(D06|A04|A05|C01|C04|C05|0004|0003|B01)\b")
+  if ($m.Success) { return $m.Value.ToUpperInvariant() }
+  if ($Text -match "(?i)proveedor|cotizacion hoffens|gobantes|sodimac|strongtie|steelfix") { return "B-D06" }
+  if ($Text -match "(?i)duplicad|dos sku|unificar") { return "B-A04" }
+  if ($Text -match "(?i)costo cero|costo 0|valorizar|stock.*costo") { return "B-A05" }
+  if ($Text -match "(?i)pdf formal|excel|cotizacion formal") { return "B-C01" }
+  if ($Text -match "(?i)match dudoso|score|confianza") { return "B-C04" }
+  if ($Text -match "(?i)sin match|matchcode") { return "B-C05" }
+  if ($Text -match "(?i)sku nuevo|similar a bom") { return "B-0004" }
+  if ($Text -match "(?i)oc sin sku|sku real") { return "B-0003" }
+  if ($Text -match "(?i)bom.*sin sku|item bom") { return "B-B01" }
+  ""
+}
+
+function Render-BodegaHelpReplyHtml {
+  param([object]$Help, [string]$CheckId)
+  $steps = (@($Help.steps) | ForEach-Object { "<li>$(HtmlEscape $_)</li>" }) -join ""
+  $codeText = if ($CheckId) { "<p><strong>Alerta:</strong> $(HtmlEscape $CheckId)</p>" } else { "" }
+  @"
+<div style="font-family:Arial,sans-serif;color:#222;font-size:14px;line-height:1.45;">
+  <p>Hola. Respondo solo sobre como resolver manualmente alertas de Bodega + Materiales.</p>
+  $codeText
+  <h3 style="margin-bottom:4px;">$(HtmlEscape $Help.title)</h3>
+  <p><strong>Cual es el problema:</strong> $(HtmlEscape $Help.problem)</p>
+  <p><strong>Como resolverlo en la app:</strong></p>
+  <ol>$steps</ol>
+  <p style="font-size:12px;color:#666;">Si necesitas otra alerta, responde con su codigo o copia la linea exacta del correo del agente.</p>
+</div>
+"@
+}
+
+function Invoke-BodegaMaterialesResponder {
+  param([object]$Config, [string]$GraphToken, [string]$SiteId, [datetime]$Now)
+  $mailbox = [string]$Config.mail.sender
+  $stateFile = "$($Config.sharepoint.bodega_materiales_folder)/responder_procesados.json"
+  Ensure-GraphFolder -Token $GraphToken -SiteId $SiteId -FolderPath $Config.sharepoint.bodega_materiales_folder
+  $stateText = Read-TextFileFromGraph -Token $GraphToken -SiteId $SiteId -FilePath $stateFile
+  $processedIds = @()
+  if (-not [string]::IsNullOrWhiteSpace($stateText)) {
+    try { $processedIds = @($stateText | ConvertFrom-Json) } catch { $processedIds = @() }
+  }
+  $processedSet = New-Object System.Collections.Generic.HashSet[string]
+  foreach ($id in @($processedIds)) { if ($id) { [void]$processedSet.Add([string]$id) } }
+
+  $uri = "https://graph.microsoft.com/v1.0/users/$mailbox/mailFolders/inbox/messages?`$top=25&`$orderby=receivedDateTime desc&`$select=id,subject,from,bodyPreview,body,isRead,receivedDateTime"
+  $messages = @((Invoke-GraphGet -Token $GraphToken -Uri $uri).value)
+  $processed = 0
+  foreach ($msg in @($messages | Where-Object { $_.isRead -eq $false })) {
+    $messageId = [string]$msg.id
+    if ($processedSet.Contains($messageId)) { continue }
+    $from = [string]$msg.from.emailAddress.address
+    if ($from -eq $mailbox) { continue }
+    $subject = [string]$msg.subject
+    $bodyText = "$subject`n$($msg.bodyPreview)`n$($msg.body.content)"
+    if ($bodyText -notmatch "(?i)Bodega.?Materiales|B-[A-Z0-9]{2,4}|bodega|materiales") { continue }
+    if ($bodyText -notmatch "(?i)como|c[oó]mo|resolver|resuelvo|explica|explicame|problema|que significa|qu[eé] significa|ayuda") { continue }
+
+    $checkId = Resolve-BodegaHelpCheckId -Text $bodyText
+    $help = Get-BodegaHelpDefinition -CheckId $checkId
+    $reply = Render-BodegaHelpReplyHtml -Help $help -CheckId $checkId
+    Reply-GraphMail -Token $GraphToken -Mailbox $mailbox -MessageId $msg.id -HtmlBody $reply
+    [void]$processedSet.Add($messageId)
+    $processed++
+    Write-Output "Bodega+Materiales responder: respuesta enviada a $from para $checkId."
+  }
+  $nextState = @($processedSet.GetEnumerator() | Select-Object -Last 500)
+  Write-TextFileToGraph -Token $GraphToken -SiteId $SiteId -FilePath $stateFile -Text ($nextState | ConvertTo-Json -Depth 5) -ContentType "application/json; charset=utf-8"
+  Write-Output "Bodega+Materiales responder: mensajes procesados=$processed."
 }
 
 function Get-FinanceIssues {
@@ -1491,4 +1730,6 @@ if ($Mode -eq "test") {
   Invoke-DailyPulse -Config $config -GraphToken $graphToken -SiteId $siteId -Now $now -DoSendEmail $SendEmail
 } elseif ($Mode -eq "bodega_materiales") {
   Invoke-BodegaMateriales -Config $config -GraphToken $graphToken -SiteId $siteId -Now $now -DoSendEmail $SendEmail
+} elseif ($Mode -eq "bodega_materiales_respuestas") {
+  Invoke-BodegaMaterialesResponder -Config $config -GraphToken $graphToken -SiteId $siteId -Now $now
 }
