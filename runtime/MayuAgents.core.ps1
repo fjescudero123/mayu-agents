@@ -824,7 +824,8 @@ function Build-BodegaMaterialesReport {
       Add-BodegaIssue $issues (New-BodegaIssue "B-0002" "CRITICO" "Trazabilidad" "OC con item fuera del BOM activo" "OC $ocId usa item $itemCode, pero ese codigo no aparece en los BOM activos leidos." "Carlos" "Corregir itemCode o registrar excepcion autorizada por Carlos." $ocId)
     }
     if ([string]::IsNullOrWhiteSpace($skuCode)) {
-      Add-BodegaIssue $issues (New-BodegaIssue "B-0003" "CRITICO" "Trazabilidad" "OC sin SKU candidato de bodega" "OC $ocId no tiene SKU de bodega asociado antes de recepcionar." "Carlos / Mauricio" "Linkear a SKU candidato antes de recepcion o dejar excepcion autorizada." $ocId)
+      $itemDesc = Get-FirstText $oc @("itemDesc", "descripcion", "description", "nombre", "name")
+      Add-BodegaIssue $issues (New-BodegaIssue "B-0003" "CRITICO" "Trazabilidad" "OC sin SKU candidato de bodega" "OC $ocId no tiene SKU de bodega asociado antes de recepcionar. Proyecto=$projectId ItemBOM=$itemCode Desc='$itemDesc' Proveedor='$proveedor'." "Carlos / Mauricio" "Linkear a SKU candidato antes de recepcion o dejar excepcion autorizada." $ocId)
     }
     if (-not (Get-FirstText $oc @("cotizId", "cotizacionId", "quoteId"))) {
       Add-BodegaIssue $issues (New-BodegaIssue "B-D04" "ALTO" "Ordenes de compra" "OC sin cotizacion asociada" "OC $ocId no tiene cotizacion vinculada." "Carlos / Valentina" "Vincular cotizacion formal o justificar compra directa." $ocId)
@@ -1078,6 +1079,9 @@ function Invoke-BodegaMateriales {
     foreach ($issue in @($group.Group | Select-Object -First 5)) {
       Write-Output "Bodega+Materiales ejemplo $($group.Name): [$($issue.level)] ref=$($issue.ref) detalle=$($issue.detail) accion=$($issue.action)"
     }
+  }
+  foreach ($issue in @($report.issues | Where-Object { $_.checkId -eq "B-0003" } | Select-Object -First 200)) {
+    Write-Output "Bodega+Materiales B-0003 full: ref=$($issue.ref) detalle=$($issue.detail)"
   }
   foreach ($issue in @($report.issues | Select-Object -First 25)) {
     Write-Output "Bodega+Materiales alerta: [$($issue.level)] $($issue.checkId) $($issue.title) | $($issue.ref) | $($issue.action)"
