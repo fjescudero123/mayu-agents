@@ -1074,6 +1074,11 @@ function Invoke-BodegaMateriales {
   foreach ($group in @($report.issues | Group-Object checkId | Sort-Object Count -Descending | Select-Object -First 20)) {
     Write-Output "Bodega+Materiales breakdown: $($group.Name)=$($group.Count)"
   }
+  foreach ($group in @($report.issues | Group-Object checkId | Sort-Object Count -Descending | Select-Object -First 12)) {
+    foreach ($issue in @($group.Group | Select-Object -First 5)) {
+      Write-Output "Bodega+Materiales ejemplo $($group.Name): [$($issue.level)] ref=$($issue.ref) detalle=$($issue.detail) accion=$($issue.action)"
+    }
+  }
   foreach ($issue in @($report.issues | Select-Object -First 25)) {
     Write-Output "Bodega+Materiales alerta: [$($issue.level)] $($issue.checkId) $($issue.title) | $($issue.ref) | $($issue.action)"
   }
