@@ -1049,6 +1049,50 @@ function Build-BodegaMaterialesReport {
   }
 }
 
+function Write-BodegaPprPvcCandidates {
+  param([object]$Data)
+  $catalogItems = @(Get-BodegaCatalogItems -Catalog @($Data.inv_catalogo))
+  $targets = @()
+  foreach ($oc in @($Data.mat_ordenes)) {
+    $skuCode = Get-FirstText $oc @("skuCode", "catalogCode", "codigoBodega")
+    if ($skuCode) { continue }
+    $desc = Get-FirstText $oc @("itemDesc", "descripcion", "description", "nombre", "name")
+    if ($desc -notmatch "(?i)\b(PPR|PVC|ABRAZADERA|TUBER|CODO|COPLA|TEE|TERMINAL|LLAVE DE PASO)\b") { continue }
+    $targets += [pscustomobject]@{
+      oc = Get-FirstText $oc @("id", "folio", "ocId")
+      item = Get-FirstText $oc @("bomItemCode", "itemCode", "matchCode", "code")
+      desc = $desc
+      proveedor = Get-FirstText $oc @("proveedor", "supplierName", "vendor", "razonSocial")
+      project = Get-FirstText $oc @("matProjectId", "projectId", "proyectoId")
+    }
+  }
+  Write-Output "Bodega+Materiales PPR/PVC: targets=$($targets.Count)"
+  foreach ($target in @($targets | Select-Object -First 80)) {
+    $candidates = @(
+      $catalogItems | ForEach-Object {
+        $score = Get-TextSimilarity $target.desc $_.desc
+        $bonus = 0.0
+        if ($_.legacy -and $target.item -and $_.legacy -eq $target.item) { $bonus += 1.0 }
+        if ($_.code -and $target.item -and $_.code -eq $target.item) { $bonus += 1.0 }
+        if ($target.desc -match "(?i)PPR" -and $_.desc -match "(?i)PPR") { $bonus += 0.2 }
+        if ($target.desc -match "(?i)PVC" -and $_.desc -match "(?i)PVC") { $bonus += 0.2 }
+        [pscustomobject]@{
+          score = $score + $bonus
+          code = $_.code
+          legacy = $_.legacy
+          desc = $_.desc
+          stock = Get-Number $_.raw.stock
+          costo = Get-Number $_.raw.costoPromedio
+        }
+      } | Sort-Object score -Descending | Select-Object -First 5
+    )
+    $candidateText = (@($candidates) | ForEach-Object {
+      "$($_.code)|legacy=$($_.legacy)|stock=$($_.stock)|score=$([Math]::Round($_.score,2))|$($_.desc)"
+    }) -join " || "
+    Write-Output "Bodega+Materiales PPR/PVC candidate: oc=$($target.oc) item=$($target.item) desc=$($target.desc) proveedor=$($target.proveedor) :: $candidateText"
+  }
+}
+
 function Render-BodegaMaterialesHtml {
   param([object]$Report)
   $s = $Report.summary
@@ -1071,6 +1115,7 @@ function Invoke-BodegaMateriales {
   Write-Output "Bodega+Materiales: leyendo Firestore."
   $data = Get-FirestoreData -Config $Config
   $report = Build-BodegaMaterialesReport -Config $Config -Data $data -Now $Now
+  Write-BodegaPprPvcCandidates -Data $data
   Write-Output "Bodega+Materiales: resumen criticas=$($report.summary.criticas) altas=$($report.summary.altas) medias=$($report.summary.medias) bajas=$($report.summary.bajas) total=$($report.summary.total)."
   foreach ($group in @($report.issues | Group-Object checkId | Sort-Object Count -Descending | Select-Object -First 20)) {
     Write-Output "Bodega+Materiales breakdown: $($group.Name)=$($group.Count)"
