@@ -1071,6 +1071,9 @@ function Invoke-BodegaMateriales {
   $data = Get-FirestoreData -Config $Config
   $report = Build-BodegaMaterialesReport -Config $Config -Data $data -Now $Now
   Write-Output "Bodega+Materiales: resumen criticas=$($report.summary.criticas) altas=$($report.summary.altas) medias=$($report.summary.medias) bajas=$($report.summary.bajas) total=$($report.summary.total)."
+  foreach ($group in @($report.issues | Group-Object checkId | Sort-Object Count -Descending | Select-Object -First 20)) {
+    Write-Output "Bodega+Materiales breakdown: $($group.Name)=$($group.Count)"
+  }
   foreach ($issue in @($report.issues | Select-Object -First 25)) {
     Write-Output "Bodega+Materiales alerta: [$($issue.level)] $($issue.checkId) $($issue.title) | $($issue.ref) | $($issue.action)"
   }
