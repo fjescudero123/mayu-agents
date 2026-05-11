@@ -727,6 +727,22 @@ function Get-TextSimilarity {
   [double]$intersection / [double]$union
 }
 
+function Get-NumberTokens {
+  param([object]$Value)
+  $text = ([string]$Value).ToLowerInvariant()
+  @([regex]::Matches($text, "\d+(?:[.,]\d+)?") | ForEach-Object { $_.Value -replace ",", "." } | Select-Object -Unique)
+}
+
+function Test-MeaningfullyDifferentSpecs {
+  param([object]$A, [object]$B)
+  $aNums = @(Get-NumberTokens $A)
+  $bNums = @(Get-NumberTokens $B)
+  if ($aNums.Count -eq 0 -or $bNums.Count -eq 0) { return $false }
+  $a = ($aNums | Sort-Object) -join "|"
+  $b = ($bNums | Sort-Object) -join "|"
+  $a -ne $b
+}
+
 function New-BodegaIssue {
   param(
     [string]$CheckId,
@@ -832,6 +848,11 @@ function Build-BodegaMaterialesReport {
     if ($c.code) { [void]$catalogCodes.Add([string]$c.code) }
     if ($c.legacy) { [void]$legacyCodes.Add([string]$c.legacy) }
   }
+  $ocBomCodes = New-Object System.Collections.Generic.HashSet[string]
+  foreach ($oc in @($Data.mat_ordenes)) {
+    $ocItemCode = Get-FirstText $oc @("bomItemCode", "itemCode", "matchCode", "code")
+    if ($ocItemCode) { [void]$ocBomCodes.Add([string]$ocItemCode) }
+  }
   $similarThreshold = Get-Number $Config.thresholds.bodega_materiales_similarity_threshold 0.7
   $dupThreshold = Get-Number $Config.thresholds.bodega_materiales_duplicate_threshold 0.85
   $deliveryDays = [int](Get-Number $Config.thresholds.bodega_materiales_delivery_days 7)
@@ -918,6 +939,8 @@ function Build-BodegaMaterialesReport {
   }
 
   foreach ($mov in @($Data.inv_movimientos)) {
+    if ($mov.anulado -eq $true -or $mov.ignorarAuditoria -eq $true) { continue }
+    if ($mov.stockGeneral -eq $true -or $mov.auditoriaBodegaMaterialesExcepcion -eq $true) { continue }
     $movId = Get-FirstText $mov @("id", "movementId")
     $tipo = Get-FirstText $mov @("tipo", "type")
     $skuCode = Get-FirstText $mov @("skuCode", "code", "itemCode")
@@ -927,14 +950,21 @@ function Build-BodegaMaterialesReport {
     $itemCode = Get-FirstText $mov @("bomItemCode", "itemCode", "matchCode")
     if ($mov.refDoc) {
       if (-not $ocId) { $ocId = Get-FirstText $mov.refDoc @("ocId", "ordenId") }
+      if (-not $ocId -and (Get-FirstText $mov.refDoc @("tipo")) -eq "mat_orden") { $ocId = Get-FirstText $mov.refDoc @("id") }
       if (-not $recId) { $recId = Get-FirstText $mov.refDoc @("recepcionId", "receiptId") }
       if (-not $itemCode) { $itemCode = Get-FirstText $mov.refDoc @("bomItemCode", "itemCode") }
     }
-    if ($tipo -in @("recepcion_oc", "ingreso_directo") -and ([string]::IsNullOrWhiteSpace($projectId) -or [string]::IsNullOrWhiteSpace($skuCode))) {
+    if ($tipo -in @("recepcion_oc", "ingreso_directo") -and [string]::IsNullOrWhiteSpace($skuCode)) {
       Add-BodegaIssue $issues (New-BodegaIssue "B-0005" "CRITICO" "Trazabilidad" "Movimiento sin identidad completa" "Movimiento $movId tipo $tipo no conserva proyecto/SKU suficientes." "Mauricio" "Completar trazabilidad en movimiento o corregir recepcion origen." $movId)
+    } elseif ($tipo -eq "recepcion_oc" -and [string]::IsNullOrWhiteSpace($projectId)) {
+      Add-BodegaIssue $issues (New-BodegaIssue "B-0005" "CRITICO" "Trazabilidad" "Movimiento sin proyecto" "Movimiento $movId tipo recepcion_oc no conserva proyecto." "Mauricio" "Completar proyecto desde OC/recepcion origen." $movId)
+    } elseif ($tipo -eq "ingreso_directo" -and [string]::IsNullOrWhiteSpace($projectId)) {
+      Add-BodegaIssue $issues (New-BodegaIssue "B-0005" "ALTO" "Trazabilidad" "Ingreso directo sin proyecto" "Movimiento $movId tipo ingreso_directo tiene SKU, pero no proyecto." "Mauricio / Carlos" "Confirmar si es stock general; si corresponde a proyecto, vincularlo a OC/BOM." $movId)
     }
-    if ($tipo -eq "recepcion_oc" -and ([string]::IsNullOrWhiteSpace($ocId) -or [string]::IsNullOrWhiteSpace($recId) -or [string]::IsNullOrWhiteSpace($itemCode))) {
+    if ($tipo -eq "recepcion_oc" -and ([string]::IsNullOrWhiteSpace($ocId) -or [string]::IsNullOrWhiteSpace($itemCode))) {
       Add-BodegaIssue $issues (New-BodegaIssue "B-0005" "CRITICO" "Trazabilidad" "Kardex sin OC/recepcion/BOM" "Movimiento $movId no hereda ocId, recepcionId y bomItemCode." "Mauricio / Felix" "Corregir app para heredar campos y regularizar movimiento." $movId)
+    } elseif ($tipo -eq "recepcion_oc" -and [string]::IsNullOrWhiteSpace($recId)) {
+      Add-BodegaIssue $issues (New-BodegaIssue "B-0005" "ALTO" "Trazabilidad" "Kardex historico sin recepcionId" "Movimiento $movId conserva OC y BOM, pero no tiene recepcionId historico." "Mauricio / Felix" "Mantener como pendiente historico o asociar recepcion si existe evidencia." $movId)
     }
     if ($tipo -eq "ingreso_directo") {
       $desc = Get-FirstText $mov @("descSku", "description", "descripcion", "itemDesc")
@@ -946,9 +976,6 @@ function Build-BodegaMaterialesReport {
   }
 
   foreach ($c in $catalogItems) {
-    if ($c.legacy -and -not $bomCodes.Contains($c.legacy)) {
-      Add-BodegaIssue $issues (New-BodegaIssue "B-A01" "CRITICO" "Catalogo" "SKU apunta a BOM inexistente" "$($c.code) tiene codigoLegacy $($c.legacy), pero ese codigo no existe en BOM activo." "Mauricio / Carlos" "Corregir codigoLegacy o archivar SKU si es legado." $c.code)
-    }
     if (-not $c.legacy -and $c.desc) {
       $similarBom = @($bomItems | Where-Object { (Get-TextSimilarity $c.desc $_.desc) -ge $similarThreshold } | Select-Object -First 1)
       if ($similarBom.Count -gt 0) {
@@ -975,6 +1002,7 @@ function Build-BodegaMaterialesReport {
   for ($i = 0; $i -lt $catalogItems.Count; $i++) {
     for ($j = $i + 1; $j -lt $catalogItems.Count; $j++) {
       if ([string]::IsNullOrWhiteSpace($catalogItems[$i].desc) -or [string]::IsNullOrWhiteSpace($catalogItems[$j].desc)) { continue }
+      if (Test-MeaningfullyDifferentSpecs $catalogItems[$i].desc $catalogItems[$j].desc) { continue }
       if ((Get-TextSimilarity $catalogItems[$i].desc $catalogItems[$j].desc) -ge $dupThreshold) {
         Add-BodegaIssue $issues (New-BodegaIssue "B-A04" "ALTO" "Catalogo" "SKUs posiblemente duplicados" "$($catalogItems[$i].code) y $($catalogItems[$j].code) tienen descripciones casi identicas." "Mauricio / Carlos" "Unificar identidad o documentar diferencia fisica." "$($catalogItems[$i].code)|$($catalogItems[$j].code)")
         if (@($issues | Where-Object { $_.checkId -eq "B-A04" }).Count -ge 10) { break }
@@ -985,7 +1013,10 @@ function Build-BodegaMaterialesReport {
   foreach ($b in $bomItems) {
     $hasStrict = ($b.code -and ($legacyCodes.Contains($b.code) -or $catalogCodes.Contains($b.code))) -or ($b.skuCode -and $catalogCodes.Contains($b.skuCode))
     if (-not $hasStrict) {
-      Add-BodegaIssue $issues (New-BodegaIssue "B-B01" "CRITICO" "BOM-Catalogo" "Item BOM sin match estricto en catalogo" "$($b.projectName): $($b.code) '$($b.desc)' no tiene codigoLegacy/code/SKU estricto en catalogo." "Carlos / Mauricio" "Crear o linkear SKU de bodega antes de comprar/recepcionar." "$($b.matProjectId)|$($b.code)")
+      $usedInOc = $b.code -and $ocBomCodes.Contains([string]$b.code)
+      if ($usedInOc) {
+        Add-BodegaIssue $issues (New-BodegaIssue "B-B01" "CRITICO" "BOM-Catalogo" "Item BOM sin match estricto en catalogo" "$($b.projectName): $($b.code) '$($b.desc)' no tiene codigoLegacy/code/SKU estricto en catalogo." "Carlos / Mauricio" "Crear o linkear SKU de bodega antes de comprar/recepcionar." "$($b.matProjectId)|$($b.code)")
+      }
     }
   }
 
