@@ -1070,6 +1070,10 @@ function Invoke-BodegaMateriales {
   Write-Output "Bodega+Materiales: leyendo Firestore."
   $data = Get-FirestoreData -Config $Config
   $report = Build-BodegaMaterialesReport -Config $Config -Data $data -Now $Now
+  Write-Output "Bodega+Materiales: resumen criticas=$($report.summary.criticas) altas=$($report.summary.altas) medias=$($report.summary.medias) bajas=$($report.summary.bajas) total=$($report.summary.total)."
+  foreach ($issue in @($report.issues | Select-Object -First 25)) {
+    Write-Output "Bodega+Materiales alerta: [$($issue.level)] $($issue.checkId) $($issue.title) | $($issue.ref) | $($issue.action)"
+  }
   $html = Render-BodegaMaterialesHtml -Report $report
   $dateKey = $report.date
   Ensure-GraphFolder -Token $GraphToken -SiteId $SiteId -FolderPath $Config.sharepoint.bodega_materiales_folder
