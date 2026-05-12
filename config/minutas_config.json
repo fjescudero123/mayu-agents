@@ -1,0 +1,77 @@
+{
+  "timezone": "America/Santiago",
+  "sharepoint": {
+    "host": "inmobiliariamayu.sharepoint.com",
+    "input_folder": "minutas_entrada",
+    "archive_folder": "minutas_archivadas"
+  },
+  "mail": {
+    "sender": "notificaciones@imayu.cl"
+  },
+  "meetings": {
+    "comercial": {
+      "labels": ["comercial"],
+      "asunto_prefix": "Minuta Comite Comercial",
+      "to": [
+        "fjescudero@imayu.cl",
+        "fescudero@imayu.cl",
+        "efernandez@imayu.cl",
+        "jsantibanez@imayu.cl"
+      ]
+    },
+    "proyectos": {
+      "labels": ["proyectos"],
+      "asunto_prefix": "Minuta Seguimiento Proyectos",
+      "to": [
+        "fjescudero@imayu.cl",
+        "jsantibanez@imayu.cl",
+        "m.epelman@imayu.cl",
+        "efernandez@imayu.cl",
+        "fescudero@imayu.cl"
+      ]
+    },
+    "id": {
+      "labels": ["I+D", "id"],
+      "asunto_prefix": "Minuta Comite I+D",
+      "to": [
+        "fjescudero@imayu.cl",
+        "m.epelman@imayu.cl",
+        "cquintanilla@imayu.cl",
+        "omunoz@imayu.cl",
+        "efernandez@imayu.cl"
+      ]
+    },
+    "financiero_semanal": {
+      "labels": ["financiero_semanal"],
+      "asunto_prefix": "Minuta Financiero Semanal",
+      "to": [
+        "fjescudero@imayu.cl",
+        "vescudero@imayu.cl",
+        "fescudero@imayu.cl"
+      ]
+    },
+    "ejecutivo": {
+      "labels": ["ejecutivo"],
+      "asunto_prefix": "Minuta Comite Ejecutivo",
+      "to": [
+        "fjescudero@imayu.cl",
+        "fescudero@imayu.cl",
+        "m.epelman@imayu.cl",
+        "clecaros@imayu.cl",
+        "vescudero@imayu.cl",
+        "efernandez@imayu.cl"
+      ]
+    },
+    "planta_diario": {
+      "labels": ["planta_diario"],
+      "asunto_prefix": "Minuta Planta Diario",
+      "to": [
+        "fjerez@imayu.cl",
+        "groman@imayu.cl",
+        "mhernandez@imayu.cl",
+        "clecaros@imayu.cl",
+        "jquevedo@imayu.cl"
+      ]
+    }
+  }
+}

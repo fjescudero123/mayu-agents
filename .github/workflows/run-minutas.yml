@@ -1,0 +1,105 @@
+name: Run Minutas MAYU
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_mode:
+        description: "Modo a ejecutar"
+        type: choice
+        required: true
+        default: "poll"
+        options:
+          - poll
+          - single_file
+          - test
+      file_name:
+        description: "Archivo exacto para single_file"
+        required: false
+        default: ""
+      process_limit:
+        description: "Maximo de archivos a procesar"
+        required: false
+        default: "10"
+      send_email:
+        description: "Enviar correo"
+        type: boolean
+        required: false
+        default: true
+  schedule:
+    - cron: "*/5 * * * 1-5"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mayu-minutas-pipeline
+  cancel-in-progress: false
+
+jobs:
+  run:
+    name: Run minutas pipeline
+    runs-on: ubuntu-latest
+    env:
+      MayuTenantId: ${{ vars.MAYU_GRAPH_TENANT_ID }}
+      MayuClientId: ${{ vars.MAYU_GRAPH_CLIENT_ID }}
+      MayuClientSecret: ${{ secrets.MAYU_GRAPH_CLIENT_SECRET }}
+      MayuOpenAiApiKey: ${{ secrets.MAYU_OPENAI_API_KEY }}
+      MayuOpenAiModel: ${{ vars.MAYU_OPENAI_MODEL }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve inputs
+        id: resolve
+        shell: pwsh
+        run: |
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            $mode = "${{ inputs.run_mode }}"
+            $fileName = "${{ inputs.file_name }}"
+            $processLimit = "${{ inputs.process_limit }}"
+            $sendEmail = "${{ inputs.send_email }}"
+          } else {
+            $mode = "poll"
+            $fileName = ""
+            $processLimit = "10"
+            $sendEmail = "true"
+          }
+
+          if ([string]::IsNullOrWhiteSpace($processLimit)) { $processLimit = "10" }
+          if ([string]::IsNullOrWhiteSpace($sendEmail)) { $sendEmail = "true" }
+
+          "run_mode=$mode" >> $env:GITHUB_OUTPUT
+          "file_name=$fileName" >> $env:GITHUB_OUTPUT
+          "process_limit=$processLimit" >> $env:GITHUB_OUTPUT
+          "send_email=$sendEmail" >> $env:GITHUB_OUTPUT
+          Write-Output "Modo resuelto: $mode / File=$fileName / Limit=$processLimit / SendEmail=$sendEmail"
+
+      - name: Run minutas pipeline
+        shell: pwsh
+        run: |
+          $required = @(
+            "MayuTenantId",
+            "MayuClientId",
+            "MayuClientSecret"
+          )
+          foreach ($name in $required) {
+            if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) {
+              throw "Falta variable o secret requerido: $name"
+            }
+          }
+
+          $configPath = Join-Path $pwd "config/minutas_config.json"
+          $env:MayuMinutasConfigJson = Get-Content -Raw -Path $configPath
+          if ([string]::IsNullOrWhiteSpace($env:TEMP) -and -not [string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) {
+            $env:TEMP = $env:RUNNER_TEMP
+          }
+
+          $limit = [int]"${{ steps.resolve.outputs.process_limit }}"
+          $send = [System.Convert]::ToBoolean("${{ steps.resolve.outputs.send_email }}")
+
+          & ./runtime/MinutasMAYU.core.ps1 `
+            -Mode "${{ steps.resolve.outputs.run_mode }}" `
+            -FileName "${{ steps.resolve.outputs.file_name }}" `
+            -ProcessLimit $limit `
+            -SendEmail:$send
