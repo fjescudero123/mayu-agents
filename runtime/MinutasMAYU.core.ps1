@@ -425,8 +425,28 @@ function Find-PendingAgendaItems {
       Item = $item
       Parsed = $parsed
       ArchiveHtmlName = "minuta_{0}_{1}.html" -f $parsed.Tipo, $parsed.DateIso
+      SourceFolder = $inputFolder
       ArchiveDocxExists = $archiveNames.ContainsKey($archiveDocx)
       ArchiveHtmlExists = $archiveNames.ContainsKey($archiveHtml)
+    }
+  }
+
+  if ($RequestedFileName -and -not $pending.Count) {
+    foreach ($item in $archiveItems) {
+      if ($null -eq $item -or $item.folder) { continue }
+      $name = [string]$item.name
+      if ($name -ne $RequestedFileName) { continue }
+      $parsed = Parse-MinutaFileName -Name $name -MeetingMap $meetingMap
+      if ($null -eq $parsed) { continue }
+      $pending += [pscustomobject]@{
+        Item = $item
+        Parsed = $parsed
+        ArchiveHtmlName = "minuta_{0}_{1}.html" -f $parsed.Tipo, $parsed.DateIso
+        SourceFolder = $archiveFolder
+        ArchiveDocxExists = $true
+        ArchiveHtmlExists = $archiveNames.ContainsKey(("minuta_{0}_{1}.html" -f $parsed.Tipo, $parsed.DateIso).ToLowerInvariant())
+      }
+      break
     }
   }
 
@@ -505,6 +525,7 @@ function Process-MinutaItem {
   $sender = [string]$Config.mail.sender
   $inputPath = [string]$item._mayuRelativePath
   $archiveFolder = [string]$Config.sharepoint.archive_folder
+  $sourceFolder = [string]$PendingItem.SourceFolder
 
   Write-Output "Procesando $($item.name) -> tipo=$($parsed.Tipo) fecha=$($parsed.DateIso)"
   $docxBytes = Get-FileBytes -Token $Token -SiteId $SiteId -FilePath $inputPath
@@ -554,12 +575,14 @@ function Process-MinutaItem {
     -Text $htmlBody `
     -ContentType "text/html; charset=utf-8"
 
-  Move-GraphItemToFolder `
-    -Token $Token `
-    -SiteId $SiteId `
-    -ItemId ([string]$item.id) `
-    -DestinationFolderPath $archiveFolder `
-    -NewName ([string]$item.name)
+  if ($sourceFolder -eq [string]$Config.sharepoint.input_folder) {
+    Move-GraphItemToFolder `
+      -Token $Token `
+      -SiteId $SiteId `
+      -ItemId ([string]$item.id) `
+      -DestinationFolderPath $archiveFolder `
+      -NewName ([string]$item.name)
+  }
 }
 
 $configJson = Get-RunbookVariable "MayuMinutasConfigJson"
