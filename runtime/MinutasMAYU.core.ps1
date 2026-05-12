@@ -329,6 +329,17 @@ function ConvertFrom-ModelJson {
   }
 }
 
+function Normalize-ModelHtml {
+  param([string]$Text)
+  if ([string]::IsNullOrWhiteSpace($Text)) {
+    return ""
+  }
+  $candidate = $Text.Trim()
+  $candidate = [regex]::Replace($candidate, "^```(?:html)?\s*", "")
+  $candidate = [regex]::Replace($candidate, "\s*```$", "")
+  return $candidate.Trim()
+}
+
 function Get-FallbackHtml {
   param(
     [string]$MeetingTitle,
@@ -475,10 +486,7 @@ Reglas:
 - No inventes datos.
 - Si una seccion no aparece, omitela.
 - Escribe en espanol claro y ejecutivo.
-- Devuelve SOLO JSON valido.
-- El JSON debe tener exactamente estas claves:
-  - "meeting_title": string
-  - "html_body": string
+- Devuelve SOLO HTML, sin JSON, sin markdown, sin backticks.
 
 Requisitos del HTML:
 - Sin etiquetas <html> ni <body>.
@@ -543,10 +551,15 @@ function Process-MinutaItem {
     -ExtractedText $text
 
   $modelText = Invoke-OpenAiText -Prompt $prompt
-  $modelJson = ConvertFrom-ModelJson -Text $modelText
   $htmlBody = ""
-  if ($modelJson -and $modelJson.html_body) {
-    $htmlBody = [string]$modelJson.html_body
+  $candidateHtml = Normalize-ModelHtml -Text $modelText
+  if ($candidateHtml -and $candidateHtml -match "<(div|table|h1|h2|p|ul|ol)\b") {
+    $htmlBody = $candidateHtml
+  } else {
+    $modelJson = ConvertFrom-ModelJson -Text $modelText
+    if ($modelJson -and $modelJson.html_body) {
+      $htmlBody = [string]$modelJson.html_body
+    }
   }
   if ([string]::IsNullOrWhiteSpace($htmlBody)) {
     $htmlBody = Get-FallbackHtml `
