@@ -462,9 +462,29 @@ Reglas:
 
 Requisitos del HTML:
 - Sin etiquetas <html> ni <body>.
+- Debe seguir este estilo visual, no un HTML plano:
+  - contenedor principal: `<div style="font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; color: #333;">`
+  - header con borde inferior azul `#2E5A8B`
+  - titulo principal en azul `#2E5A8B`
+  - subtitulo gris con fecha/hora/lugar
+  - secciones con `h2` azul y borde izquierdo azul
+  - bloque de objetivo con fondo `#f5f7fa`, padding y borde redondeado
+  - tablas con encabezados coloreados y filas alternadas
+  - footer final con reglas transversales o cierre ejecutivo
 - Usa un tono ejecutivo y concreto.
-- Incluye, si existe evidencia en el texto: objetivo, asistentes, decisiones, avances/hitos, bloqueos, compromisos y proxima reunion.
-- Usa tablas HTML para compromisos si aparecen responsables y fechas.
+- Incluye, si existe evidencia en el texto: asistentes, objetivo, estado/avances/hitos, bloqueos, decisiones, compromisos y proxima reunion.
+- Si hay listas de proyectos o compromisos, conviertelas en tablas HTML con encabezados y estilos inline.
+- Evita responder solo con parrafos simples. Debe verse como minuta formal MAYU del estilo historico.
+
+Plantilla visual de referencia a imitar:
+`<div style="font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; color: #333;">`
+`<div style="border-bottom: 3px solid #2E5A8B; padding-bottom: 15px; margin-bottom: 20px;">`
+`<h1 style="color: #2E5A8B; margin: 0; font-size: 24px;">...`
+`<p style="color: #666; margin: 5px 0 0 0; font-size: 14px;">...`
+`</div>`
+`<div style="margin-bottom: 20px; background-color: #f5f7fa; padding: 12px 15px; border-radius: 5px;">...`
+`<table style="width: 100%; border-collapse: collapse; font-size: 13px;">...`
+`</div>`
 
 Contexto:
 - tipo interno: $MeetingType
