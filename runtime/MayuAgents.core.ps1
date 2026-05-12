@@ -146,6 +146,36 @@ function Send-GraphMail {
   } | Out-Null
 }
 
+function Get-UniqueEmails {
+  param(
+    [string[]]$Emails,
+    [string[]]$Exclude = @()
+  )
+  $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+  foreach ($email in @($Exclude | Where-Object { $_ })) {
+    [void]$seen.Add(([string]$email).Trim())
+  }
+  $result = [System.Collections.ArrayList]::new()
+  foreach ($email in @($Emails | Where-Object { $_ })) {
+    $clean = ([string]$email).Trim()
+    if ($clean -and -not $seen.Contains($clean)) {
+      [void]$seen.Add($clean)
+      [void]$result.Add($clean)
+    }
+  }
+  return @($result)
+}
+
+function Get-BodegaMaterialesMailAudience {
+  param([object]$Config)
+  return Get-UniqueEmails -Emails @(
+    $Config.mail.felix,
+    $Config.mail.valentina,
+    $Config.mail.carlos,
+    $Config.mail.mauricio
+  )
+}
+
 function Reply-GraphMail {
   param(
     [string]$Token,
@@ -1150,7 +1180,7 @@ function Invoke-BodegaMateriales {
   Write-TextFileToGraph -Token $GraphToken -SiteId $SiteId -FilePath "$($Config.sharepoint.bodega_materiales_folder)/$dateKey.json" -Text ($report | ConvertTo-Json -Depth 80) -ContentType "application/json; charset=utf-8"
   Write-TextFileToGraph -Token $GraphToken -SiteId $SiteId -FilePath "$($Config.sharepoint.bodega_materiales_folder)/$dateKey.html" -Text $html -ContentType "text/html; charset=utf-8"
   if ($DoSendEmail) {
-    $to = @($Config.mail.felix, $Config.mail.valentina, $Config.mail.carlos, $Config.mail.mauricio)
+    $to = Get-BodegaMaterialesMailAudience -Config $Config
     $subject = "[Bodega-Materiales] Alertas $dateKey - $($report.summary.criticas) CRITICAS, $($report.summary.altas) ALTAS"
     Send-GraphMail -Token $GraphToken -Sender $Config.mail.sender -To $to -Cc @() -Subject $subject -HtmlBody $html
     Write-Output "Bodega+Materiales: correo enviado."
@@ -1355,10 +1385,12 @@ function Invoke-BodegaMaterialesResponder {
     $checkId = Resolve-BodegaHelpCheckId -Text $bodyText
     $help = Get-BodegaHelpDefinition -CheckId $checkId
     $reply = Render-BodegaHelpReplyHtml -Help $help -CheckId $checkId
-    Reply-GraphMail -Token $GraphToken -Mailbox $mailbox -MessageId $msg.id -HtmlBody $reply
+    $audience = Get-UniqueEmails -Emails @((Get-BodegaMaterialesMailAudience -Config $Config) + $from) -Exclude @($mailbox)
+    $replySubject = if ($subject -match "^(?i)re:") { $subject } else { "RE: $subject" }
+    Send-GraphMail -Token $GraphToken -Sender $mailbox -To $audience -Cc @() -Subject $replySubject -HtmlBody $reply
     [void]$processedSet.Add($messageId)
     $processed++
-    Write-Output "Bodega+Materiales responder: respuesta enviada a $from para $checkId."
+    Write-Output "Bodega+Materiales responder: respuesta enviada a audiencia oficial ($($audience -join ', ')) para $checkId."
   }
   $nextState = @($processedSet.GetEnumerator() | Select-Object -Last 500)
   Write-TextFileToGraph -Token $GraphToken -SiteId $SiteId -FilePath $stateFile -Text ($nextState | ConvertTo-Json -Depth 5) -ContentType "application/json; charset=utf-8"
