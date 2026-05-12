@@ -1458,7 +1458,7 @@ function Get-FinanceIssues {
     return ($tipo -eq 61 -or $tipo -eq 112)
   }
   function Test-ControlEspecialFinanzas([object]$Factura) {
-    return (([string]$Factura.tratamientoFinanciero) -eq "CONSIGNACION" -or ([string]$Factura.auditoriaFinanzasEstado) -eq "CONTROL_ESPECIAL")
+    return (([string]$Factura.tratamientoFinanciero) -in @("CONCESION", "CONSIGNACION") -or ([string]$Factura.auditoriaFinanzasEstado) -eq "CONTROL_ESPECIAL")
   }
   $apSinProyecto = @()
   $apSinClasificar = @()
