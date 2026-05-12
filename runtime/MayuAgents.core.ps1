@@ -16,14 +16,7 @@ function Get-RunbookVariable {
     [string]$Default = ""
   )
 
-  $value = $null
-  $cmd = Get-Command -Name Get-AutomationVariable -ErrorAction SilentlyContinue
-  if ($cmd) {
-    try { $value = Get-AutomationVariable -Name $Name } catch { $value = $null }
-  }
-  if ([string]::IsNullOrWhiteSpace([string]$value)) {
-    $value = [Environment]::GetEnvironmentVariable($Name)
-  }
+  $value = [Environment]::GetEnvironmentVariable($Name)
   if ([string]::IsNullOrWhiteSpace([string]$value)) {
     $value = $Default
   }

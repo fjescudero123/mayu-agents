@@ -11,7 +11,7 @@ El runtime vigente del fiscalizador de reuniones esta sano y debe convivir sin c
 - Secretos y variables se leen desde GitHub Secrets/Variables.
 - Microsoft Graph resuelve token, SharePoint y correo.
 - OpenAI se usa como capa opcional de lectura inteligente.
-- Azure Automation queda como legacy pausado, no como runtime normal.
+- No hay Azure Automation ni Logic Apps en el runtime operativo.
 
 La nueva arquitectura de agentes mantiene ese patron, pero separa runtime, config y workflow:
 

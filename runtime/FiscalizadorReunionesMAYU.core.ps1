@@ -17,24 +17,12 @@ function Get-RunbookVariable {
     [string]$Default = ""
   )
 
-  $value = $null
-  $cmd = Get-Command -Name Get-AutomationVariable -ErrorAction SilentlyContinue
-  if ($cmd) {
-    try {
-      $value = Get-AutomationVariable -Name $Name
-    } catch {
-      $value = $null
-    }
-  }
-
-  if ([string]::IsNullOrWhiteSpace([string]$value)) {
-    $value = [Environment]::GetEnvironmentVariable($Name)
-  }
+  $value = [Environment]::GetEnvironmentVariable($Name)
   if ([string]::IsNullOrWhiteSpace([string]$value)) {
     $value = $Default
   }
   if ($Required -and [string]::IsNullOrWhiteSpace([string]$value)) {
-    throw "Falta variable de Automation: $Name"
+    throw "Falta variable requerida: $Name"
   }
   return [string]$value
 }
@@ -1493,6 +1481,6 @@ if ($Mode -eq "pre_reunion") {
     -To @($config.mail.felix) `
     -Cc @() `
     -Subject "Prueba fiscalizador reuniones MAYU" `
-    -HtmlBody "<html><body><p>Fiscalizador MAYU operativo en Azure Automation.</p><p>Hora MAYU: $($now.ToString("yyyy-MM-dd HH:mm"))</p></body></html>"
+    -HtmlBody "<html><body><p>Fiscalizador MAYU operativo en GitHub Actions.</p><p>Hora MAYU: $($now.ToString("yyyy-MM-dd HH:mm"))</p></body></html>"
   Write-Output "Prueba enviada a $($config.mail.felix)."
 }

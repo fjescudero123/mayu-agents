@@ -2,7 +2,7 @@
 
 Repositorio operacional para agentes autonomos MAYU.
 
-El fiscalizador de reuniones corre directamente en GitHub Actions. Ya no necesita Azure Automation, Azure login ni despliegue de runbook para su operacion normal.
+El runtime operativo corre directamente en GitHub Actions. No usa Azure Automation, Azure login ni despliegues a Azure para su operacion normal.
 
 ## Que ejecuta
 
@@ -12,8 +12,6 @@ El fiscalizador de reuniones corre directamente en GitHub Actions. Ya no necesit
 - SharePoint y correos via Microsoft Graph
 - Resumenes con OpenAI usando GitHub Secrets
 - Seguimiento inteligente de compromisos, bloqueos, decisiones y continuidad entre reuniones
-
-El workflow antiguo `.github/workflows/deploy-mayu-agents.yml` queda como referencia legacy de Azure Automation.
 
 ## Nueva arquitectura de agentes operacionales
 
@@ -44,7 +42,7 @@ La convivencia con el fiscalizador es intencional: no comparte workflow ni confi
 3. Configurar las variables y secrets indicados abajo en GitHub.
 4. Confirmar que el workflow **Run Fiscalizador MAYU** aparece en Actions.
 
-No se requiere OIDC, Azure login ni environment con aprobacion para la ejecucion directa del fiscalizador.
+No se requiere OIDC, Azure login ni environment con aprobacion para la ejecucion directa.
 
 ## Variables de GitHub requeridas
 
@@ -145,3 +143,13 @@ GitHub usa cron en UTC:
 ## Seguridad
 
 No subir `mayu_mail_config.json`, claves OpenAI reales, client secrets reales ni archivos sensibles. Las credenciales viven como GitHub Secrets.
+
+## Dependencias vigentes
+
+Este repo ya no depende de recursos de Azure subscription para correr.
+
+Permanece el uso de:
+
+- Microsoft Graph para SharePoint y correo;
+- GitHub Actions como runtime;
+- GitHub Secrets/Variables para credenciales.
