@@ -12,6 +12,8 @@ on:
           - daily_pulse
           - bodega_materiales
           - bodega_materiales_respuestas
+          - finanzas
+          - finanzas_respuestas
           - test
       date:
         description: "Fecha YYYY-MM-DD"
@@ -31,6 +33,10 @@ on:
     # Parte despues del Pulso y Bodega+Materiales para no solapar 12:00/12:15 UTC.
     - cron: "30,45 12 * * 1-5"
     - cron: "*/15 13-22 * * 1-5"
+    # Lunes a viernes 12:35 UTC (~08:35 Chile horario actual). Agente Finanzas.
+    - cron: "35 12 * * 1-5"
+    # Lunes a viernes, respuestas a dudas del correo Finanzas, alternado con Bodega+Materiales.
+    - cron: "5,20,35,50 13-22 * * 1-5"
 
 permissions:
   contents: read
@@ -69,6 +75,10 @@ jobs:
               $mode = "bodega_materiales"
             } elseif ("${{ github.event.schedule }}" -eq "30,45 12 * * 1-5" -or "${{ github.event.schedule }}" -eq "*/15 13-22 * * 1-5") {
               $mode = "bodega_materiales_respuestas"
+            } elseif ("${{ github.event.schedule }}" -eq "35 12 * * 1-5") {
+              $mode = "finanzas"
+            } elseif ("${{ github.event.schedule }}" -eq "5,20,35,50 13-22 * * 1-5") {
+              $mode = "finanzas_respuestas"
             } else {
               $mode = "daily_pulse"
             }

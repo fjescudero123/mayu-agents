@@ -1,5 +1,5 @@
 param(
-  [ValidateSet("daily_pulse", "bodega_materiales", "bodega_materiales_respuestas", "test")]
+  [ValidateSet("daily_pulse", "bodega_materiales", "bodega_materiales_respuestas", "finanzas", "finanzas_respuestas", "test")]
   [string]$Mode = "daily_pulse",
   [string]$Date = "",
   [bool]$SendEmail = $true
@@ -397,6 +397,30 @@ function New-Issue {
     [string]$Ref = ""
   )
   [pscustomobject]@{
+    severity = $Severity
+    area = $Area
+    title = $Title
+    detail = $Detail
+    owner = $Owner
+    action = $Action
+    ref = $Ref
+  }
+}
+
+function New-FinanceIssue {
+  param(
+    [string]$Code,
+    [ValidateSet("rojo", "amarillo", "info")]
+    [string]$Severity,
+    [string]$Area,
+    [string]$Title,
+    [string]$Detail,
+    [string]$Owner = "",
+    [string]$Action = "",
+    [string]$Ref = ""
+  )
+  [pscustomobject]@{
+    code = $Code
     severity = $Severity
     area = $Area
     title = $Title
@@ -1401,12 +1425,50 @@ function Get-FinanceIssues {
   param([object]$Config, [object]$Data, [datetime]$Now)
   $issues = [System.Collections.ArrayList]::new()
   $today = $Now.ToString("yyyy-MM-dd")
+  function Get-MaxIsoDateFinanzas([object[]]$Rows, [string]$FieldName) {
+    $dates = @($Rows | ForEach-Object {
+      $prop = $_.PSObject.Properties[$FieldName]
+      if ($prop -and -not [string]::IsNullOrWhiteSpace([string]$prop.Value)) { [string]$prop.Value }
+    } | Sort-Object)
+    if ($dates.Count -eq 0) { return "" }
+    [string]$dates[-1]
+  }
+  function Get-LatestImportFinanzas([object[]]$Rows, [string]$Tipo) {
+    @($Rows | Where-Object { [string]$_.tipo -eq $Tipo } | Sort-Object { -1 * (Get-Number $_.createdAt) } | Select-Object -First 1)
+  }
+  function Add-FuenteFinancieraIssue([string]$Nombre, [string]$TipoImportacion, [string]$FechaMaxima, [int]$DiasRojo, [int]$DiasAmarillo) {
+    if ([string]::IsNullOrWhiteSpace($FechaMaxima)) {
+      Add-Issue $issues (New-FinanceIssue -Code "F-D01" -Severity "rojo" -Area "Datos Finanzas" -Title "Fuente sin datos: $Nombre" -Detail "No hay datos cargados para $Nombre. El analisis financiero queda incompleto." -Owner "Valentina" -Action "Importar archivo actualizado en Finanzas > Importar." -Ref "fin_importaciones")
+      return
+    }
+    $dias = [int](New-TimeSpan -Start ([datetime]::Parse($FechaMaxima)) -End $Now.Date).TotalDays
+    if ($dias -lt $DiasAmarillo) { return }
+    $latest = @(Get-LatestImportFinanzas -Rows @($Data.fin_importaciones) -Tipo $TipoImportacion | Select-Object -First 1)
+    $archivo = if ($latest.Count -gt 0) { [string]$latest[0].archivo } else { "sin registro de importacion" }
+    $importado = if ($latest.Count -gt 0 -and $latest[0].createdAt) {
+      ([DateTimeOffset]::FromUnixTimeMilliseconds([int64](Get-Number $latest[0].createdAt))).ToString("yyyy-MM-dd")
+    } else {
+      "sin fecha"
+    }
+    $sev = if ($dias -ge $DiasRojo) { "rojo" } else { "amarillo" }
+    Add-Issue $issues (New-FinanceIssue -Code "F-D02" -Severity $sev -Area "Datos Finanzas" -Title "Fuente desactualizada: $Nombre" -Detail "$Nombre tiene datos hasta $FechaMaxima ($dias dia(s) sin datos nuevos). Ultima importacion registrada: $archivo, importada $importado." -Owner "Valentina" -Action "Subir archivo actualizado antes de usar caja, CxP/CxC o EERR para gerencia." -Ref "fin_importaciones")
+  }
+  function Test-NotaCreditoFinanzas([object]$Factura) {
+    $tipo = [int](Get-Number $Factura.tipoDte)
+    return ($tipo -eq 61 -or $tipo -eq 112)
+  }
+  function Test-ControlEspecialFinanzas([object]$Factura) {
+    return (([string]$Factura.tratamientoFinanciero) -eq "CONSIGNACION" -or ([string]$Factura.auditoriaFinanzasEstado) -eq "CONTROL_ESPECIAL")
+  }
   $apSinProyecto = @()
   $apSinClasificar = @()
   $apVencidas = @()
   $arSinProyecto = @()
   $arVencidas = @()
+  $movCargosSinConciliar = @()
+  $movAbonosSinConciliar = @()
   foreach ($f in @($Data.fin_facturas_ap)) {
+    if ((Test-NotaCreditoFinanzas $f) -or (Test-ControlEspecialFinanzas $f)) { continue }
     $estado = [string]$f.estado
     if (@("PAGADA","ANULADA","RECHAZADA") -contains $estado) { continue }
     if ((-not $f.proyectoId) -and (-not $f.asignaciones) -and ([string]$f.lineaNegocio) -ne "OPEX_CORP" -and ([string]$f.categoriaContable) -notin @("OPEX_FIJO","OPEX_VARIABLE")) {
@@ -1420,6 +1482,7 @@ function Get-FinanceIssues {
     }
   }
   foreach ($f in @($Data.fin_facturas_ar)) {
+    if (Test-NotaCreditoFinanzas $f) { continue }
     $estado = [string]$f.estado
     if (@("COBRADA","ANULADA") -contains $estado) { continue }
     if ((-not $f.crmProjectId) -and (-not $f.proyectoId) -and (-not $f.asignaciones)) {
@@ -1429,44 +1492,302 @@ function Get-FinanceIssues {
       $arVencidas += $f
     }
   }
+  foreach ($m in @($Data.fin_mov_bancarios)) {
+    if ($m.conciliado -or $m.linkNomina -or $m.linkOperacional) { continue }
+    $cargo = Get-Number $m.cargo
+    $abono = Get-Number $m.abono
+    if ($cargo -gt 0) {
+      $movCargosSinConciliar += $m
+    } elseif ($abono -gt 0) {
+      $movAbonosSinConciliar += $m
+    }
+  }
+  $diasRojo = [int](Get-Number $Config.thresholds.finance_source_stale_days_red 7)
+  $diasAmarillo = [int](Get-Number $Config.thresholds.finance_source_stale_days_yellow 3)
+  Add-FuenteFinancieraIssue -Nombre "Cartola BICE" -TipoImportacion "CARTOLA_BICE" -FechaMaxima (Get-MaxIsoDateFinanzas -Rows @($Data.fin_mov_bancarios) -FieldName "fecha") -DiasRojo $diasRojo -DiasAmarillo $diasAmarillo
+  Add-FuenteFinancieraIssue -Nombre "RCV Compras" -TipoImportacion "RCV_COMPRAS" -FechaMaxima (Get-MaxIsoDateFinanzas -Rows @($Data.fin_facturas_ap) -FieldName "fechaEmision") -DiasRojo $diasRojo -DiasAmarillo $diasAmarillo
+  Add-FuenteFinancieraIssue -Nombre "RCV Ventas" -TipoImportacion "RCV_VENTAS" -FechaMaxima (Get-MaxIsoDateFinanzas -Rows @($Data.fin_facturas_ar) -FieldName "fechaEmision") -DiasRojo $diasRojo -DiasAmarillo $diasAmarillo
   $maxOverdue = [int]$Config.thresholds.max_finance_overdue_items
   if ($maxOverdue -le 0) { $maxOverdue = 8 }
+  if ($movCargosSinConciliar.Count -gt 0) {
+    $monto = ($movCargosSinConciliar | ForEach-Object { Get-Number $_.cargo } | Measure-Object -Sum).Sum
+    Add-Issue $issues (New-FinanceIssue -Code "F-B01" -Severity "rojo" -Area "Caja" -Title "Cargos bancarios sin conciliar" -Detail "$($movCargosSinConciliar.Count) salida(s) de banco sin trazabilidad por aprox. $(Format-Clp $monto). No se muestra como total banco para evitar una alerta demasiado bruta." -Owner "Valentina / Felix" -Action "Separar pagos a proveedores, remuneraciones, impuestos, prestamos, comisiones y otros movimientos operacionales." -Ref "fin_mov_bancarios_cargos")
+  }
+  if ($movAbonosSinConciliar.Count -gt 0) {
+    $monto = ($movAbonosSinConciliar | ForEach-Object { Get-Number $_.abono } | Measure-Object -Sum).Sum
+    Add-Issue $issues (New-FinanceIssue -Code "F-B02" -Severity "rojo" -Area "Caja" -Title "Abonos bancarios sin conciliar" -Detail "$($movAbonosSinConciliar.Count) entrada(s) de banco sin trazabilidad por aprox. $(Format-Clp $monto). No se muestra como total banco para evitar una alerta demasiado bruta." -Owner "Valentina / Felix" -Action "Separar cobros de clientes, aportes, vale vista, rechazos y transferencias internas." -Ref "fin_mov_bancarios_abonos")
+  }
   foreach ($f in @($apVencidas | Sort-Object { -1 * (Get-Number $_.montoTotal) } | Select-Object -First $maxOverdue)) {
-    Add-Issue $issues (New-Issue -Severity "rojo" -Area "Caja" -Title "CxP vencida" -Detail "$($f.razonSocialContraparte) folio $($f.folio) vencio $($f.fechaVencimiento), monto $(Format-Clp (Get-Number $f.montoTotal))." -Owner "Valentina / Felix" -Action "Decidir pago o renegociacion." -Ref $f.id)
+    Add-Issue $issues (New-FinanceIssue -Code "F-CXP01" -Severity "rojo" -Area "Caja" -Title "CxP vencida" -Detail "$($f.razonSocialContraparte) folio $($f.folio) vencio $($f.fechaVencimiento), monto $(Format-Clp (Get-Number $f.montoTotal))." -Owner "Valentina / Felix" -Action "Decidir pago o renegociacion." -Ref $f.id)
   }
   if ($apVencidas.Count -gt $maxOverdue) {
     $rest = @($apVencidas | Sort-Object { -1 * (Get-Number $_.montoTotal) } | Select-Object -Skip $maxOverdue)
     $restMonto = ($rest | ForEach-Object { Get-Number $_.montoTotal } | Measure-Object -Sum).Sum
-    Add-Issue $issues (New-Issue -Severity "rojo" -Area "Caja" -Title "CxP vencida adicional agrupada" -Detail "$($rest.Count) factura(s) AP vencidas adicionales por aprox. $(Format-Clp $restMonto)." -Owner "Valentina / Felix" -Action "Revisar lista completa en Finanzas." -Ref "fin_facturas_ap")
+    Add-Issue $issues (New-FinanceIssue -Code "F-CXP02" -Severity "rojo" -Area "Caja" -Title "CxP vencida adicional agrupada" -Detail "$($rest.Count) factura(s) CxP vencidas adicionales por aprox. $(Format-Clp $restMonto)." -Owner "Valentina / Felix" -Action "Revisar lista completa en Finanzas." -Ref "fin_facturas_ap")
   }
   foreach ($f in @($arVencidas | Sort-Object { -1 * (Get-Number $_.montoTotal) } | Select-Object -First $maxOverdue)) {
-    Add-Issue $issues (New-Issue -Severity "rojo" -Area "Caja" -Title "CxC vencida" -Detail "$($f.razonSocialContraparte) folio $($f.folio) vencio $($f.fechaVencimiento), monto $(Format-Clp (Get-Number $f.montoTotal))." -Owner "Valentina / Comercial" -Action "Gestionar cobranza." -Ref $f.id)
+    Add-Issue $issues (New-FinanceIssue -Code "F-CXC01" -Severity "rojo" -Area "Caja" -Title "CxC vencida" -Detail "$($f.razonSocialContraparte) folio $($f.folio) vencio $($f.fechaVencimiento), monto $(Format-Clp (Get-Number $f.montoTotal))." -Owner "Valentina / Comercial" -Action "Gestionar cobranza." -Ref $f.id)
   }
   if ($arVencidas.Count -gt $maxOverdue) {
     $rest = @($arVencidas | Sort-Object { -1 * (Get-Number $_.montoTotal) } | Select-Object -Skip $maxOverdue)
     $restMonto = ($rest | ForEach-Object { Get-Number $_.montoTotal } | Measure-Object -Sum).Sum
-    Add-Issue $issues (New-Issue -Severity "rojo" -Area "Caja" -Title "CxC vencida adicional agrupada" -Detail "$($rest.Count) factura(s) AR vencidas adicionales por aprox. $(Format-Clp $restMonto)." -Owner "Valentina / Comercial" -Action "Revisar lista completa en Finanzas." -Ref "fin_facturas_ar")
+    Add-Issue $issues (New-FinanceIssue -Code "F-CXC02" -Severity "rojo" -Area "Caja" -Title "CxC vencida adicional agrupada" -Detail "$($rest.Count) factura(s) CxC vencidas adicionales por aprox. $(Format-Clp $restMonto)." -Owner "Valentina / Comercial" -Action "Revisar lista completa en Finanzas." -Ref "fin_facturas_ar")
   }
   if ($apSinProyecto.Count -gt 0) {
     $monto = ($apSinProyecto | ForEach-Object { Get-Number $_.montoTotal } | Measure-Object -Sum).Sum
-    Add-Issue $issues (New-Issue -Severity "amarillo" -Area "Finanzas" -Title "Facturas AP sin proyecto agrupadas" -Detail "$($apSinProyecto.Count) factura(s) AP sin proyecto por aprox. $(Format-Clp $monto). Pueden superponerse con sin clasificar." -Owner "Valentina" -Action "Clasificar por lote en Finanzas para destrabar costos por proyecto." -Ref "fin_facturas_ap")
+    Add-Issue $issues (New-FinanceIssue -Code "F-CXP03" -Severity "amarillo" -Area "Finanzas" -Title "Facturas CxP sin proyecto agrupadas" -Detail "$($apSinProyecto.Count) factura(s) CxP sin proyecto por aprox. $(Format-Clp $monto). Pueden superponerse con sin clasificar." -Owner "Valentina" -Action "Clasificar por lote en Finanzas para destrabar costos por proyecto." -Ref "fin_facturas_ap")
   }
   if ($apSinClasificar.Count -gt 0) {
     $monto = ($apSinClasificar | ForEach-Object { Get-Number $_.montoTotal } | Measure-Object -Sum).Sum
-    Add-Issue $issues (New-Issue -Severity "amarillo" -Area "Finanzas" -Title "Facturas AP sin clasificar agrupadas" -Detail "$($apSinClasificar.Count) factura(s) AP en SIN_CLASIFICAR por aprox. $(Format-Clp $monto)." -Owner "Valentina" -Action "Clasificar linea/cuenta/proyecto por lote." -Ref "fin_facturas_ap")
+    Add-Issue $issues (New-FinanceIssue -Code "F-CXP04" -Severity "amarillo" -Area "Finanzas" -Title "Facturas CxP sin clasificar agrupadas" -Detail "$($apSinClasificar.Count) factura(s) CxP en SIN_CLASIFICAR por aprox. $(Format-Clp $monto)." -Owner "Valentina" -Action "Clasificar linea/cuenta/proyecto por lote." -Ref "fin_facturas_ap")
   }
   if ($arSinProyecto.Count -gt 0) {
     $monto = ($arSinProyecto | ForEach-Object { Get-Number $_.montoTotal } | Measure-Object -Sum).Sum
-    Add-Issue $issues (New-Issue -Severity "amarillo" -Area "Finanzas" -Title "Facturas AR sin proyecto agrupadas" -Detail "$($arSinProyecto.Count) factura(s) AR sin proyecto por aprox. $(Format-Clp $monto)." -Owner "Valentina" -Action "Vincular a CRM/proyecto para lectura comercial y directorio." -Ref "fin_facturas_ar")
+    Add-Issue $issues (New-FinanceIssue -Code "F-CXC03" -Severity "amarillo" -Area "Finanzas" -Title "Facturas CxC sin proyecto agrupadas" -Detail "$($arSinProyecto.Count) factura(s) CxC sin proyecto por aprox. $(Format-Clp $monto)." -Owner "Valentina" -Action "Vincular a CRM/proyecto para lectura comercial y directorio." -Ref "fin_facturas_ar")
   }
   $ocPressure = 0.0
   foreach ($oc in @($Data.mat_ordenes | Where-Object { ([string]$_.status) -notin @("total","recibida_total","cerrada","anulada") })) {
     $ocPressure += ((Get-Number $oc.qty) * (Get-Number $oc.precioUnit))
   }
   if ($ocPressure -gt 0) {
-    Add-Issue $issues (New-Issue -Severity "info" -Area "Caja" -Title "Presion de OCs sobre caja" -Detail "OCs abiertas comprometen aprox. $([Math]::Round($ocPressure,0)) CLP." -Owner "Felix / Valentina" -Action "Contrastar contra flujo 13 semanas." -Ref "mat_ordenes")
+    Add-Issue $issues (New-FinanceIssue -Code "F-OC01" -Severity "info" -Area "Caja" -Title "Presion de OCs sobre caja" -Detail "OCs abiertas comprometen aprox. $([Math]::Round($ocPressure,0)) CLP." -Owner "Felix / Valentina" -Action "Contrastar contra flujo 13 semanas." -Ref "mat_ordenes")
   }
   @($issues)
+}
+
+function Build-FinanzasReport {
+  param([object]$Config, [object]$Data, [datetime]$Now)
+  $issues = @(Get-FinanceIssues -Config $Config -Data $Data -Now $Now)
+  [pscustomobject]@{
+    generatedAt = $Now.ToString("o")
+    date = $Now.ToString("yyyy-MM-dd")
+    summary = [pscustomobject]@{
+      rojas = @($issues | Where-Object { $_.severity -eq "rojo" }).Count
+      amarillas = @($issues | Where-Object { $_.severity -eq "amarillo" }).Count
+      informativas = @($issues | Where-Object { $_.severity -eq "info" }).Count
+      total = @($issues).Count
+    }
+    issues = $issues
+  }
+}
+
+function Render-FinanzasHtml {
+  param([object]$Report)
+  $s = $Report.summary
+  @"
+<html>
+<body style="font-family:Arial,sans-serif;color:#222;max-width:980px;font-size:14px;">
+  <h2 style="margin-bottom:4px;">Agente Finanzas MAYU - $($Report.date)</h2>
+  <p style="margin-top:0;color:#555;">Rojas: <strong style="color:#991b1b;">$($s.rojas)</strong> &middot; Amarillas: <strong style="color:#9a3412;">$($s.amarillas)</strong> &middot; Informativas: <strong style="color:#2563eb;">$($s.informativas)</strong></p>
+
+  <h3>Alertas accionables</h3>
+  $(Render-IssueList -Items @($Report.issues | Where-Object { $_.severity -in @("rojo", "amarillo") }))
+
+  <h3>Contexto gerencial</h3>
+  $(Render-IssueList -Items @($Report.issues | Where-Object { $_.severity -eq "info" }))
+
+  <h3>Como pedir ayuda</h3>
+  <p>Responde este correo con el codigo de la alerta, por ejemplo <strong>F-B01</strong>, o copia la linea del problema. El respondedor de Finanzas te dira que hacer en la app para resolverlo.</p>
+  <p style="font-size:12px;color:#777;">Este agente no corrige datos por correo. Solo reporta inconsistencias que afectan caja, CxP, CxC, clasificacion, proyectos o fuentes desactualizadas.</p>
+</body>
+</html>
+"@
+}
+
+function Get-FinanzasHelpDefinition {
+  param([string]$Code)
+  switch -Regex ($Code) {
+    "^F-D0" {
+      [pscustomobject]@{
+        title = "$Code - Fuente financiera desactualizada o sin datos"
+        problem = "La app Finanzas no tiene una fuente al dia, como cartola bancaria o RCV. Esto afecta lectura gerencial de caja, CxP, CxC y EERR."
+        steps = @(
+          "Entrar a Finanzas > Importar.",
+          "Subir la fuente actualizada que corresponda: cartola BICE, RCV Compras o RCV Ventas.",
+          "Revisar el resumen de importacion y confirmar que la fecha maxima avance.",
+          "Volver a correr el agente Finanzas.",
+          "Si el archivo nuevo igual queda atrasado, revisar si el archivo descargado del banco/SII venia incompleto."
+        )
+      }
+    }
+    "^F-B01" {
+      [pscustomobject]@{
+        title = "F-B01 - Cargos bancarios sin conciliar"
+        problem = "Hay salidas de banco sin trazabilidad. Gerencialmente esto impide saber que proveedor, remuneracion, impuesto, prestamo o gasto ya fue pagado."
+        steps = @(
+          "Entrar a Finanzas > Banco / Conciliacion.",
+          "Filtrar cargos sin conciliar.",
+          "Para cada cargo, vincular factura CxP, remuneracion, impuesto, prestamo, transferencia interna o gasto operacional.",
+          "Si no existe documento, clasificarlo con nota operacional y responsable.",
+          "Si afecta proyecto o inventario, dejar proyecto/linea/cuenta antes de cerrar la conciliacion."
+        )
+      }
+    }
+    "^F-B02" {
+      [pscustomobject]@{
+        title = "F-B02 - Abonos bancarios sin conciliar"
+        problem = "Hay entradas de banco sin trazabilidad. Esto puede mezclar cobros de clientes, aportes de capital, prestamos de socios, reembolsos o reversas."
+        steps = @(
+          "Entrar a Finanzas > Banco / Conciliacion.",
+          "Filtrar abonos sin conciliar.",
+          "Separar cobros de clientes, aportes de capital, prestamos de socios, reembolsos, vale vista rechazados y reversas.",
+          "Vincular CxC cuando sea cobranza real.",
+          "Cuando sea aporte/prestamo/reversa, dejar categoria y nota para que no se lea como venta."
+        )
+      }
+    }
+    "^F-CXP" {
+      [pscustomobject]@{
+        title = "$Code - CxP por corregir"
+        problem = "La cuenta por pagar requiere accion porque puede estar vencida, sin proyecto o sin clasificacion. Esto afecta caja, deuda real, costo por proyecto y OPEX."
+        steps = @(
+          "Entrar a Finanzas > Cuentas por pagar.",
+          "Abrir la factura o el grupo indicado.",
+          "Si ya esta pagada, vincular el movimiento bancario correspondiente.",
+          "Si no esta pagada, decidir pago, renegociacion o excepcion documentada.",
+          "Completar proyecto, linea de negocio y categoria contable. Usar OPEX solo cuando no sea costo de proyecto, inventario, herramientas, garantia, prestamo o remuneracion."
+        )
+      }
+    }
+    "^F-CXC" {
+      [pscustomobject]@{
+        title = "$Code - CxC por corregir"
+        problem = "La cuenta por cobrar requiere accion porque puede estar vencida o sin proyecto. Esto afecta cobranza, pipeline y lectura comercial."
+        steps = @(
+          "Entrar a Finanzas > Cuentas por cobrar.",
+          "Abrir la factura indicada.",
+          "Si ya fue cobrada, vincular el abono bancario.",
+          "Si sigue pendiente, coordinar cobranza con Comercial.",
+          "Completar CRM/proyecto para que el ingreso quede conectado al negocio correcto."
+        )
+      }
+    }
+    "^F-OC01" {
+      [pscustomobject]@{
+        title = "F-OC01 - Presion de OCs sobre caja"
+        problem = "Las OCs abiertas no son deuda bancaria ni CxP, pero si representan compromisos potenciales de caja. Sirven para mirar costo real versus comprometido."
+        steps = @(
+          "Revisar OCs abiertas en Materiales.",
+          "Separar OCs emitidas, recibidas parcial, cerradas o anuladas.",
+          "Contrastar contra flujo de caja de 13 semanas.",
+          "Cuando una OC ya tenga factura, revisar que Finanzas la tome como CxP y no como compromiso duplicado.",
+          "Usar esta alerta como contexto gerencial, no como deuda real."
+        )
+      }
+    }
+    default {
+      [pscustomobject]@{
+        title = "Agente Finanzas"
+        problem = "Puedo explicar alertas financieras y pasos manuales en la app Finanzas."
+        steps = @(
+          "Responde indicando el codigo de alerta: F-D01, F-D02, F-B01, F-B02, F-CXP01, F-CXP03, F-CXP04, F-CXC01, F-CXC03 o F-OC01.",
+          "Tambien puedes copiar una linea completa del informe.",
+          "No modifico datos por correo; solo explico que hacer para resolver la inconsistencia."
+        )
+      }
+    }
+  }
+}
+
+function Resolve-FinanzasHelpCode {
+  param([string]$Text)
+  $m = [regex]::Match($Text, "(?i)\bF-(D0[12]|B0[12]|CXP0[1-4]|CXC0[1-3]|OC01)\b")
+  if ($m.Success) { return $m.Value.ToUpperInvariant() }
+  if ($Text -match "(?i)cartola|rcv|libro|fuente|desactualizad|sin datos") { return "F-D02" }
+  if ($Text -match "(?i)cargo|salida|banco|concili") { return "F-B01" }
+  if ($Text -match "(?i)abono|entrada|aporte|prestamo|reembolso|vale vista|reversa") { return "F-B02" }
+  if ($Text -match "(?i)cxp|proveedor|pagar|vencida|sin proyecto|sin clasificar|opex") { return "F-CXP01" }
+  if ($Text -match "(?i)cxc|cobrar|cobranza|cliente") { return "F-CXC01" }
+  if ($Text -match "(?i)oc|orden de compra|comprometido") { return "F-OC01" }
+  ""
+}
+
+function Render-FinanzasHelpReplyHtml {
+  param([object]$Help, [string]$Code)
+  $steps = (@($Help.steps) | ForEach-Object { "<li>$(HtmlEscape $_)</li>" }) -join ""
+  $codeText = if ($Code) { "<p><strong>Alerta:</strong> $(HtmlEscape $Code)</p>" } else { "" }
+  @"
+<div style="font-family:Arial,sans-serif;color:#222;font-size:14px;line-height:1.45;">
+  <p>Hola. Respondo sobre como resolver manualmente alertas de Finanzas.</p>
+  $codeText
+  <h3 style="margin-bottom:4px;">$(HtmlEscape $Help.title)</h3>
+  <p><strong>Cual es el problema:</strong> $(HtmlEscape $Help.problem)</p>
+  <p><strong>Como resolverlo en la app:</strong></p>
+  <ol>$steps</ol>
+  <p style="font-size:12px;color:#666;">Si necesitas otra alerta, responde con su codigo o copia la linea exacta del correo del agente.</p>
+</div>
+"@
+}
+
+function Invoke-Finanzas {
+  param([object]$Config, [string]$GraphToken, [string]$SiteId, [datetime]$Now, [bool]$DoSendEmail)
+  Write-Output "Finanzas: leyendo Firestore."
+  $data = Get-FirestoreData -Config $Config
+  $report = Build-FinanzasReport -Config $Config -Data $data -Now $Now
+  Write-Output "Finanzas: resumen rojas=$($report.summary.rojas) amarillas=$($report.summary.amarillas) informativas=$($report.summary.informativas) total=$($report.summary.total)."
+  foreach ($group in @($report.issues | Group-Object code | Sort-Object Count -Descending | Select-Object -First 20)) {
+    Write-Output "Finanzas breakdown: $($group.Name)=$($group.Count)"
+  }
+  foreach ($issue in @($report.issues | Select-Object -First 25)) {
+    Write-Output "Finanzas alerta: [$($issue.severity)] $($issue.code) $($issue.title) | $($issue.ref) | $($issue.action)"
+  }
+  $html = Render-FinanzasHtml -Report $report
+  $dateKey = $report.date
+  Ensure-GraphFolder -Token $GraphToken -SiteId $SiteId -FolderPath $Config.sharepoint.finanzas_folder
+  Write-TextFileToGraph -Token $GraphToken -SiteId $SiteId -FilePath "$($Config.sharepoint.finanzas_folder)/$dateKey.json" -Text ($report | ConvertTo-Json -Depth 80) -ContentType "application/json; charset=utf-8"
+  Write-TextFileToGraph -Token $GraphToken -SiteId $SiteId -FilePath "$($Config.sharepoint.finanzas_folder)/$dateKey.html" -Text $html -ContentType "text/html; charset=utf-8"
+  if ($DoSendEmail) {
+    $to = Get-UniqueEmails -Emails @($Config.mail.felix, $Config.mail.valentina)
+    $subject = "[Finanzas] Alertas $dateKey - $($report.summary.rojas) ROJAS, $($report.summary.amarillas) AMARILLAS"
+    Send-GraphMail -Token $GraphToken -Sender $Config.mail.sender -To $to -Cc @() -Subject $subject -HtmlBody $html
+    Write-Output "Finanzas: correo enviado a $($to -join ', ')."
+  } else {
+    Write-Output "Finanzas: SendEmail=false, no se envia correo."
+  }
+  Write-Output "Finanzas: outputs guardados en SharePoint."
+}
+
+function Invoke-FinanzasResponder {
+  param([object]$Config, [string]$GraphToken, [string]$SiteId, [datetime]$Now)
+  $mailbox = [string]$Config.mail.sender
+  Disable-GraphMailboxAutoReplies -Token $GraphToken -Mailbox $mailbox
+  $stateFile = "$($Config.sharepoint.finanzas_folder)/responder_procesados.json"
+  Ensure-GraphFolder -Token $GraphToken -SiteId $SiteId -FolderPath $Config.sharepoint.finanzas_folder
+  $stateText = Read-TextFileFromGraph -Token $GraphToken -SiteId $SiteId -FilePath $stateFile
+  $processedIds = @()
+  if (-not [string]::IsNullOrWhiteSpace($stateText)) {
+    try { $processedIds = @($stateText | ConvertFrom-Json) } catch { $processedIds = @() }
+  }
+  $processedSet = New-Object System.Collections.Generic.HashSet[string]
+  foreach ($id in @($processedIds)) { if ($id) { [void]$processedSet.Add([string]$id) } }
+
+  $uri = "https://graph.microsoft.com/v1.0/users/$mailbox/mailFolders/inbox/messages?`$top=25&`$orderby=receivedDateTime desc&`$select=id,subject,from,bodyPreview,body,isRead,receivedDateTime"
+  $messages = @((Invoke-GraphGet -Token $GraphToken -Uri $uri).value)
+  $processed = 0
+  foreach ($msg in @($messages | Where-Object { $_.isRead -eq $false })) {
+    $messageId = [string]$msg.id
+    if ($processedSet.Contains($messageId)) { continue }
+    $from = [string]$msg.from.emailAddress.address
+    if ($from -eq $mailbox) { continue }
+    $subject = [string]$msg.subject
+    $bodyText = "$subject`n$($msg.bodyPreview)`n$($msg.body.content)"
+    if ($bodyText -notmatch "(?i)Finanzas|F-(D0|B0|CXP|CXC|OC)|cartola|RCV|CxP|CxC|banco|concili") { continue }
+    if ($bodyText -notmatch "(?i)como|c.mo|resolver|resuelvo|explica|explicame|problema|que significa|qu. significa|ayuda|hacer") { continue }
+
+    $code = Resolve-FinanzasHelpCode -Text $bodyText
+    $help = Get-FinanzasHelpDefinition -Code $code
+    $reply = Render-FinanzasHelpReplyHtml -Help $help -Code $code
+    $audience = Get-UniqueEmails -Emails @($Config.mail.felix, $Config.mail.valentina, $from) -Exclude @($mailbox)
+    $replySubject = if ($subject -match "^(?i)re:") { $subject } else { "RE: $subject" }
+    Send-GraphMail -Token $GraphToken -Sender $mailbox -To $audience -Cc @() -Subject $replySubject -HtmlBody $reply
+    Set-GraphMailRead -Token $GraphToken -Mailbox $mailbox -MessageId $messageId
+    [void]$processedSet.Add($messageId)
+    $processed++
+    Write-Output "Finanzas responder: respuesta enviada a audiencia oficial ($($audience -join ', ')) para $code."
+  }
+  $nextState = @($processedSet.GetEnumerator() | Select-Object -Last 500)
+  Write-TextFileToGraph -Token $GraphToken -SiteId $SiteId -FilePath $stateFile -Text ($nextState | ConvertTo-Json -Depth 5) -ContentType "application/json; charset=utf-8"
+  Write-Output "Finanzas responder: mensajes procesados=$processed."
 }
 
 function Get-CalidadIssues {
@@ -1663,9 +1984,15 @@ function Render-IssueList {
   $html = "<table style='border-collapse:collapse;width:100%;font-size:13px;'><tr><th style='text-align:left;border:1px solid #ddd;padding:6px;'>Sev</th><th style='text-align:left;border:1px solid #ddd;padding:6px;'>Tema</th><th style='text-align:left;border:1px solid #ddd;padding:6px;'>Accion</th><th style='text-align:left;border:1px solid #ddd;padding:6px;'>Resp.</th></tr>"
   foreach ($it in @($Items)) {
     $color = if ($it.severity -eq "rojo") { "#991b1b" } elseif ($it.severity -eq "amarillo") { "#9a3412" } else { "#2563eb" }
+    $codeText = ""
+    if ($it.PSObject.Properties["code"] -and -not [string]::IsNullOrWhiteSpace([string]$it.code)) {
+      $codeText = "$($it.code) - "
+    } elseif ($it.PSObject.Properties["checkId"] -and -not [string]::IsNullOrWhiteSpace([string]$it.checkId)) {
+      $codeText = "$($it.checkId) - "
+    }
     $html += "<tr>"
     $html += "<td style='border:1px solid #ddd;padding:6px;color:$color;font-weight:bold;'>$(HtmlEscape $it.severity)</td>"
-    $html += "<td style='border:1px solid #ddd;padding:6px;'><strong>$(HtmlEscape $it.title)</strong><br><span style='color:#555;'>$(HtmlEscape $it.detail)</span><br><span style='font-size:12px;color:#777;'>$(HtmlEscape $it.ref)</span></td>"
+    $html += "<td style='border:1px solid #ddd;padding:6px;'><strong>$(HtmlEscape ($codeText + $it.title))</strong><br><span style='color:#555;'>$(HtmlEscape $it.detail)</span><br><span style='font-size:12px;color:#777;'>$(HtmlEscape $it.ref)</span></td>"
     $html += "<td style='border:1px solid #ddd;padding:6px;'>$(HtmlEscape $it.action)</td>"
     $html += "<td style='border:1px solid #ddd;padding:6px;'>$(HtmlEscape $it.owner)</td>"
     $html += "</tr>"
@@ -1779,4 +2106,8 @@ if ($Mode -eq "test") {
   Invoke-BodegaMateriales -Config $config -GraphToken $graphToken -SiteId $siteId -Now $now -DoSendEmail $SendEmail
 } elseif ($Mode -eq "bodega_materiales_respuestas") {
   Invoke-BodegaMaterialesResponder -Config $config -GraphToken $graphToken -SiteId $siteId -Now $now
+} elseif ($Mode -eq "finanzas") {
+  Invoke-Finanzas -Config $config -GraphToken $graphToken -SiteId $siteId -Now $now -DoSendEmail $SendEmail
+} elseif ($Mode -eq "finanzas_respuestas") {
+  Invoke-FinanzasResponder -Config $config -GraphToken $graphToken -SiteId $siteId -Now $now
 }

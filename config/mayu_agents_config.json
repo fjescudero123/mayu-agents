@@ -13,6 +13,7 @@
     "biblia_folder": "agentes_mayu/biblia_proyecto",
     "traspaso_folder": "agentes_mayu/traspaso_control_operacion",
     "bodega_materiales_folder": "agentes_mayu/bodega_materiales",
+    "finanzas_folder": "agentes_mayu/finanzas",
     "minutas_seguimiento_folder": "minutas_archivadas/seguimiento_compromisos",
     "links": {
       "hub": "https://mayu-hub.netlify.app/",
@@ -56,7 +57,8 @@
     "fin_saldos_bancarios": "fin_saldos_bancarios",
     "fin_proveedores": "fin_proveedores",
     "fin_proyectos_cerrados": "fin_proyectos_cerrados",
-    "fin_tarjetas_credito": "fin_tarjetas_credito"
+    "fin_tarjetas_credito": "fin_tarjetas_credito",
+    "fin_importaciones": "fin_importaciones"
   },
   "doc_requirements": {
     "bom": { "area": "ingenieria", "doc_ids": ["i1"], "owner": "Martin" },
@@ -76,6 +78,8 @@
     "ar_overdue_days": 0,
     "max_items_per_section": 12,
     "max_finance_overdue_items": 8,
+    "finance_source_stale_days_red": 7,
+    "finance_source_stale_days_yellow": 3,
     "max_inventory_examples": 8,
     "bodega_materiales_similarity_threshold": 0.7,
     "bodega_materiales_duplicate_threshold": 0.85,
@@ -97,6 +101,13 @@
     "bodega_materiales": {
       "enabled": true,
       "send_email_default": true
+    },
+    "finanzas": {
+      "enabled": true,
+      "send_email_default": true
+    },
+    "finanzas_respuestas": {
+      "enabled": true
     }
   }
 }
