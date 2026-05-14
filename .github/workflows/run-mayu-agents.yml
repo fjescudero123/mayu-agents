@@ -7,8 +7,9 @@ on:
         description: "Modo a ejecutar"
         type: choice
         required: true
-        default: "daily_pulse"
+        default: "morning_reports"
         options:
+          - morning_reports
           - daily_pulse
           - bodega_materiales
           - bodega_materiales_respuestas
@@ -25,16 +26,14 @@ on:
         required: false
         default: true
   schedule:
-    # Lunes a viernes 12:00 UTC (~08:00 Chile horario actual). Pulso gerencial diario.
+    # Lunes a viernes 12:00 UTC (~08:00 Chile horario actual).
+    # Ejecuta los tres reportes de la manana juntos para evitar atrasos/drops
+    # de GitHub Actions cuando hay varios crons separados.
     - cron: "0 12 * * 1-5"
-    # Lunes a viernes 12:15 UTC (~08:15 Chile horario actual). Agente Bodega + Materiales.
-    - cron: "15 12 * * 1-5"
     # Lunes a viernes, respuestas a dudas del correo Bodega + Materiales.
-    # Parte despues del Pulso y Bodega+Materiales para no solapar 12:00/12:15 UTC.
+    # Parte despues de los reportes de la manana para no solapar con 12:00 UTC.
     - cron: "30,45 12 * * 1-5"
     - cron: "*/15 13-22 * * 1-5"
-    # Lunes a viernes 12:35 UTC (~08:35 Chile horario actual). Agente Finanzas.
-    - cron: "35 12 * * 1-5"
     # Lunes a viernes, respuestas a dudas del correo Finanzas, alternado con Bodega+Materiales.
     - cron: "5,20,35,50 13-22 * * 1-5"
 
@@ -71,12 +70,10 @@ jobs:
             $date = "${{ inputs.date }}"
             $sendEmail = "${{ inputs.send_email }}"
           } else {
-            if ("${{ github.event.schedule }}" -eq "15 12 * * 1-5") {
-              $mode = "bodega_materiales"
+            if ("${{ github.event.schedule }}" -eq "0 12 * * 1-5") {
+              $mode = "morning_reports"
             } elseif ("${{ github.event.schedule }}" -eq "30,45 12 * * 1-5" -or "${{ github.event.schedule }}" -eq "*/15 13-22 * * 1-5") {
               $mode = "bodega_materiales_respuestas"
-            } elseif ("${{ github.event.schedule }}" -eq "35 12 * * 1-5") {
-              $mode = "finanzas"
             } elseif ("${{ github.event.schedule }}" -eq "5,20,35,50 13-22 * * 1-5") {
               $mode = "finanzas_respuestas"
             } else {

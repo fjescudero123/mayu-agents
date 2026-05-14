@@ -1,5 +1,5 @@
 param(
-  [ValidateSet("daily_pulse", "bodega_materiales", "bodega_materiales_respuestas", "finanzas", "finanzas_respuestas", "test")]
+  [ValidateSet("morning_reports", "daily_pulse", "bodega_materiales", "bodega_materiales_respuestas", "finanzas", "finanzas_respuestas", "test")]
   [string]$Mode = "daily_pulse",
   [string]$Date = "",
   [bool]$SendEmail = $true
@@ -218,6 +218,71 @@ function Get-Mayutime {
 function HtmlEscape {
   param([object]$Value)
   [System.Net.WebUtility]::HtmlEncode([string]$Value)
+}
+
+function Get-MayuEmailTone {
+  param([string]$Tone)
+  switch (([string]$Tone).ToLowerInvariant()) {
+    "rojo" { return [pscustomobject]@{ label = "Rojo"; accent = "#d92d20"; bg = "#fff5f5"; soft = "#fef3f2" } }
+    "critico" { return [pscustomobject]@{ label = "Critico"; accent = "#d92d20"; bg = "#fff5f5"; soft = "#fef3f2" } }
+    "amarillo" { return [pscustomobject]@{ label = "Amarillo"; accent = "#d97706"; bg = "#fffbeb"; soft = "#fef7e0" } }
+    "alto" { return [pscustomobject]@{ label = "Alto"; accent = "#d97706"; bg = "#fffbeb"; soft = "#fef7e0" } }
+    "medio" { return [pscustomobject]@{ label = "Medio"; accent = "#ca8a04"; bg = "#fffbeb"; soft = "#fef7e0" } }
+    "bajo" { return [pscustomobject]@{ label = "Bajo"; accent = "#2563eb"; bg = "#f4f7fb"; soft = "#eef4ff" } }
+    "verde" { return [pscustomobject]@{ label = "Verde"; accent = "#168a50"; bg = "#f0fdf4"; soft = "#ecfdf3" } }
+    default { return [pscustomobject]@{ label = "Info"; accent = "#2563eb"; bg = "#f4f7fb"; soft = "#eef4ff" } }
+  }
+}
+
+function New-MayuEmailMetric {
+  param([string]$Label, [object]$Value, [string]$Tone = "info")
+  $toneInfo = Get-MayuEmailTone -Tone $Tone
+  "<td style='padding:0 8px 8px 0;vertical-align:top;'><div style='border:1px solid #e5e7eb;border-left:4px solid $($toneInfo.accent);background:#ffffff;padding:10px 12px;min-width:110px;'><div style='font-size:11px;line-height:1.25;color:#6b7280;text-transform:uppercase;letter-spacing:.3px;'>$(HtmlEscape $Label)</div><div style='font-size:22px;line-height:1.15;color:#202124;font-weight:700;margin-top:3px;'>$(HtmlEscape $Value)</div></div></td>"
+}
+
+function New-MayuEmailSection {
+  param([string]$Title, [string]$Html)
+  @"
+<div style="margin-top:22px;">
+  <h3 style="font-size:16px;line-height:1.3;color:#202124;margin:0 0 10px 0;">$(HtmlEscape $Title)</h3>
+  $Html
+</div>
+"@
+}
+
+function New-MayuEmptyState {
+  param([string]$Text)
+  "<div style='border:1px solid #d9eadf;border-left:4px solid #168a50;background:#f7fbf8;padding:12px 14px;color:#234234;'>$(HtmlEscape $Text)</div>"
+}
+
+function New-MayuEmailLayout {
+  param([string]$Title, [string]$Subtitle, [string]$ContentHtml, [string]$Footer = "Generado por MAYU Agents.")
+  @"
+<html>
+<body style="margin:0;padding:0;background:#f6f8fb;font-family:Arial,sans-serif;color:#202124;font-size:14px;line-height:1.45;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f6f8fb;padding:20px 0;">
+    <tr>
+      <td align="center">
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:980px;background:#ffffff;border:1px solid #e5e7eb;">
+          <tr>
+            <td style="border-left:4px solid #0078d4;background:#f4f7fb;padding:18px 22px;">
+              <h2 style="font-size:22px;line-height:1.25;color:#202124;margin:0 0 4px 0;">$(HtmlEscape $Title)</h2>
+              <p style="margin:0;color:#5f6368;">$(HtmlEscape $Subtitle)</p>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:20px 22px;">
+              $ContentHtml
+              <p style="font-size:12px;line-height:1.4;color:#777;margin:28px 0 0 0;">$(HtmlEscape $Footer)</p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
+"@
 }
 
 function Get-Number {
@@ -1152,6 +1217,7 @@ function Write-BodegaPprPvcCandidates {
 
 function Render-BodegaMaterialesHtml {
   param([object]$Report)
+  return Render-BodegaMaterialesHtmlV2 -Report $Report
   $s = $Report.summary
   $rows = Render-IssueList -Items @($Report.issues | Select-Object -First 80)
   @"
@@ -1191,7 +1257,7 @@ function Invoke-BodegaMateriales {
   foreach ($issue in @($report.issues | Select-Object -First 25)) {
     Write-Output "Bodega+Materiales alerta: [$($issue.level)] $($issue.checkId) $($issue.title) | $($issue.ref) | $($issue.action)"
   }
-  $html = Render-BodegaMaterialesHtml -Report $report
+  $html = Render-BodegaMaterialesHtmlV2 -Report $report
   $dateKey = $report.date
   Ensure-GraphFolder -Token $GraphToken -SiteId $SiteId -FolderPath $Config.sharepoint.bodega_materiales_folder
   Write-TextFileToGraph -Token $GraphToken -SiteId $SiteId -FilePath "$($Config.sharepoint.bodega_materiales_folder)/$dateKey.json" -Text ($report | ConvertTo-Json -Depth 80) -ContentType "application/json; charset=utf-8"
@@ -1401,7 +1467,7 @@ function Invoke-BodegaMaterialesResponder {
 
     $checkId = Resolve-BodegaHelpCheckId -Text $bodyText
     $help = Get-BodegaHelpDefinition -CheckId $checkId
-    $reply = Render-BodegaHelpReplyHtml -Help $help -CheckId $checkId
+    $reply = Render-HelpReplyCard -Intro "Hola. Respondo solo sobre como resolver manualmente alertas de Bodega + Materiales." -Help $help -Code $checkId
     $audience = Get-UniqueEmails -Emails @((Get-BodegaMaterialesMailAudience -Config $Config) + $from) -Exclude @($mailbox)
     $replySubject = if ($subject -match "^(?i)re:") { $subject } else { "RE: $subject" }
     Send-GraphMail -Token $GraphToken -Sender $mailbox -To $audience -Cc @() -Subject $replySubject -HtmlBody $reply
@@ -1566,6 +1632,7 @@ function Build-FinanzasReport {
 
 function Render-FinanzasHtml {
   param([object]$Report)
+  return Render-FinanzasHtmlV2 -Report $Report
   $s = $Report.summary
   @"
 <html>
@@ -1724,7 +1791,7 @@ function Invoke-Finanzas {
   foreach ($issue in @($report.issues | Select-Object -First 25)) {
     Write-Output "Finanzas alerta: [$($issue.severity)] $($issue.code) $($issue.title) | $($issue.ref) | $($issue.action)"
   }
-  $html = Render-FinanzasHtml -Report $report
+  $html = Render-FinanzasHtmlV2 -Report $report
   $dateKey = $report.date
   Ensure-GraphFolder -Token $GraphToken -SiteId $SiteId -FolderPath $Config.sharepoint.finanzas_folder
   Write-TextFileToGraph -Token $GraphToken -SiteId $SiteId -FilePath "$($Config.sharepoint.finanzas_folder)/$dateKey.json" -Text ($report | ConvertTo-Json -Depth 80) -ContentType "application/json; charset=utf-8"
@@ -1769,7 +1836,7 @@ function Invoke-FinanzasResponder {
 
     $code = Resolve-FinanzasHelpCode -Text $bodyText
     $help = Get-FinanzasHelpDefinition -Code $code
-    $reply = Render-FinanzasHelpReplyHtml -Help $help -Code $code
+    $reply = Render-HelpReplyCard -Intro "Hola. Respondo sobre como resolver manualmente alertas de Finanzas." -Help $help -Code $code
     $audience = Get-UniqueEmails -Emails @($Config.mail.felix, $Config.mail.valentina, $from) -Exclude @($mailbox)
     $replySubject = if ($subject -match "^(?i)re:") { $subject } else { "RE: $subject" }
     Send-GraphMail -Token $GraphToken -Sender $mailbox -To $audience -Cc @() -Subject $replySubject -HtmlBody $reply
@@ -1994,8 +2061,131 @@ function Render-IssueList {
   $html
 }
 
+function Render-IssueListCards {
+  param([object[]]$Items)
+  if (@($Items).Count -eq 0) { return (New-MayuEmptyState -Text "Sin alertas relevantes.") }
+  $html = ""
+  foreach ($it in @($Items)) {
+    $rawTone = if ($it.PSObject.Properties["level"]) { [string]$it.level } else { [string]$it.severity }
+    $tone = Get-MayuEmailTone -Tone $rawTone
+    $codeText = ""
+    if ($it.PSObject.Properties["code"] -and -not [string]::IsNullOrWhiteSpace([string]$it.code)) {
+      $codeText = "$($it.code) - "
+    } elseif ($it.PSObject.Properties["checkId"] -and -not [string]::IsNullOrWhiteSpace([string]$it.checkId)) {
+      $codeText = "$($it.checkId) - "
+    }
+    $html += @"
+<div style="border:1px solid #e5e7eb;border-left:4px solid $($tone.accent);background:#ffffff;padding:12px 14px;margin:0 0 10px 0;">
+  <div style="margin-bottom:6px;">
+    <span style="display:inline-block;background:$($tone.soft);border:1px solid $($tone.accent);color:#202124;font-size:11px;line-height:1;text-transform:uppercase;letter-spacing:.3px;padding:5px 7px;">$(HtmlEscape $rawTone)</span>
+    <span style="color:#6b7280;font-size:12px;margin-left:6px;">$(HtmlEscape $it.area)</span>
+  </div>
+  <div style="font-weight:700;color:#202124;margin-bottom:4px;">$(HtmlEscape ($codeText + $it.title))</div>
+  <div style="color:#4b5563;margin-bottom:8px;">$(HtmlEscape $it.detail)</div>
+  <div style="background:#f8fafc;border:1px solid #edf2f7;padding:8px 10px;color:#30343b;"><strong>Accion:</strong> $(HtmlEscape $it.action)</div>
+  <div style="font-size:12px;color:#6b7280;margin-top:7px;"><strong>Responsable:</strong> $(HtmlEscape $it.owner) &nbsp; <strong>Ref:</strong> $(HtmlEscape $it.ref)</div>
+</div>
+"@
+  }
+  $html
+}
+
+function Render-BodegaMaterialesHtmlV2 {
+  param([object]$Report)
+  $s = $Report.summary
+  $metrics = @(
+    New-MayuEmailMetric -Label "Criticas" -Value $s.criticas -Tone "critico"
+    New-MayuEmailMetric -Label "Altas" -Value $s.altas -Tone "alto"
+    New-MayuEmailMetric -Label "Medias" -Value $s.medias -Tone "medio"
+    New-MayuEmailMetric -Label "Bajas" -Value $s.bajas -Tone "bajo"
+  ) -join ""
+  $content = @"
+<table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;margin:0 0 12px 0;"><tr>$metrics</tr></table>
+<div style="background:#f4f7fb;border-left:4px solid #0078d4;padding:12px 14px;color:#30343b;margin:12px 0 18px 0;">
+  Puedes responder este correo con preguntas como <strong>"como resuelvo B-D06"</strong>, <strong>"explicame B-A05"</strong> o copiando una alerta. El agente respondera solo con explicacion operativa y pasos manuales en las apps.
+</div>
+$(New-MayuEmailSection -Title "Alertas" -Html (Render-IssueListCards -Items @($Report.issues | Select-Object -First 80)))
+"@
+  New-MayuEmailLayout -Title "Agente Bodega + Materiales - $($Report.date)" -Subtitle "Trazabilidad, catalogo, compras, recepciones y entregas a fabrica." -ContentHtml $content -Footer "Destinatarios productivos esperados: Felix, Valentina, Carlos y Mauricio. El envio queda controlado por SendEmail."
+}
+
+function Render-FinanzasHtmlV2 {
+  param([object]$Report)
+  $s = $Report.summary
+  $metrics = @(
+    New-MayuEmailMetric -Label "Rojas" -Value $s.rojas -Tone "rojo"
+    New-MayuEmailMetric -Label "Amarillas" -Value $s.amarillas -Tone "amarillo"
+    New-MayuEmailMetric -Label "Informativas" -Value $s.informativas -Tone "info"
+  ) -join ""
+  $actionable = Render-IssueListCards -Items @($Report.issues | Where-Object { $_.severity -in @("rojo", "amarillo") })
+  $context = Render-IssueListCards -Items @($Report.issues | Where-Object { $_.severity -eq "info" })
+  $content = @"
+<table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;margin:0 0 12px 0;"><tr>$metrics</tr></table>
+$(New-MayuEmailSection -Title "Alertas accionables" -Html $actionable)
+$(New-MayuEmailSection -Title "Contexto gerencial" -Html $context)
+<div style="background:#f4f7fb;border-left:4px solid #0078d4;padding:12px 14px;color:#30343b;margin-top:22px;">
+  Responde este correo con el codigo de la alerta, por ejemplo <strong>F-B01</strong>, o copia la linea del problema. El respondedor de Finanzas te dira que hacer en la app para resolverlo.
+</div>
+"@
+  New-MayuEmailLayout -Title "Agente Finanzas MAYU - $($Report.date)" -Subtitle "Caja, CxP, CxC, clasificacion, proyectos y fuentes actualizadas." -ContentHtml $content -Footer "Este agente no corrige datos por correo. Solo reporta inconsistencias que afectan la lectura gerencial."
+}
+
+function Render-HelpReplyCard {
+  param([string]$Intro, [object]$Help, [string]$Code)
+  $steps = (@($Help.steps) | ForEach-Object { "<li>$(HtmlEscape $_)</li>" }) -join ""
+  $codeText = if ($Code) { "<p><strong>Alerta:</strong> $(HtmlEscape $Code)</p>" } else { "" }
+  @"
+<div style="font-family:Arial,sans-serif;color:#202124;font-size:14px;line-height:1.45;border:1px solid #e5e7eb;border-left:4px solid #0078d4;background:#ffffff;padding:14px 16px;">
+  <p style="margin-top:0;">$(HtmlEscape $Intro)</p>
+  $codeText
+  <h3 style="margin:0 0 8px 0;color:#202124;">$(HtmlEscape $Help.title)</h3>
+  <p><strong>Cual es el problema:</strong> $(HtmlEscape $Help.problem)</p>
+  <p><strong>Como resolverlo en la app:</strong></p>
+  <ol>$steps</ol>
+  <p style="font-size:12px;color:#666;margin-bottom:0;">Si necesitas otra alerta, responde con su codigo o copia la linea exacta del correo del agente.</p>
+</div>
+"@
+}
+
+function Render-PulseHtmlV2 {
+  param([object]$Config, [object]$Pulse)
+  $s = $Pulse.summary
+  $links = $Config.sharepoint.links
+  $decisionHtml = if (@($Pulse.decisionesFelixHoy).Count -eq 0) {
+    New-MayuEmptyState -Text "No hay decisiones rojas detectadas con la data disponible."
+  } else {
+    $items = (@($Pulse.decisionesFelixHoy) | ForEach-Object {
+      "<li style='margin:0 0 8px 0;'><strong>$(HtmlEscape $_.owner):</strong> $(HtmlEscape $_.text)</li>"
+    }) -join "`n"
+    "<ol style='margin:0;padding-left:20px;'>$items</ol>"
+  }
+  $metrics = @(
+    New-MayuEmailMetric -Label "Rojos" -Value $s.rojos -Tone "rojo"
+    New-MayuEmailMetric -Label "Amarillos" -Value $s.amarillos -Tone "amarillo"
+    New-MayuEmailMetric -Label "Biblia roja" -Value $s.bibliaRoja -Tone "rojo"
+    New-MayuEmailMetric -Label "Biblia amarilla" -Value $s.bibliaAmarilla -Tone "amarillo"
+  ) -join ""
+  $apps = "Apps: <a href='$($links.control)' style='color:#0b57d0;'>Control</a> &middot; <a href='$($links.materiales)' style='color:#0b57d0;'>Materiales</a> &middot; <a href='$($links.bodega)' style='color:#0b57d0;'>Bodega</a> &middot; <a href='$($links.fabricacion)' style='color:#0b57d0;'>Fabricacion</a> &middot; <a href='$($links.finanzas)' style='color:#0b57d0;'>Finanzas</a> &middot; <a href='$($links.crm)' style='color:#0b57d0;'>CRM</a>"
+  $content = @"
+<table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;margin:0 0 12px 0;"><tr>$metrics</tr></table>
+$(New-MayuEmailSection -Title "Decisiones Felix hoy" -Html $decisionHtml)
+$(New-MayuEmailSection -Title "Riesgos rojos" -Html (Render-IssueListCards -Items @($Pulse.raw.allIssues | Where-Object { $_.severity -eq "rojo" } | Select-Object -First 12)))
+$(New-MayuEmailSection -Title "Amarillos" -Html (Render-IssueListCards -Items @($Pulse.raw.allIssues | Where-Object { $_.severity -eq "amarillo" } | Select-Object -First 12)))
+$(New-MayuEmailSection -Title "Biblia del Proyecto" -Html (Render-IssueListCards -Items @($Pulse.sections.bibliaProyecto)))
+$(New-MayuEmailSection -Title "Traspaso Control -> Operacion" -Html (Render-IssueListCards -Items @($Pulse.sections.traspasoControlOperacion)))
+$(New-MayuEmailSection -Title "Packs" -Html (Render-IssueListCards -Items @($Pulse.sections.packs)))
+$(New-MayuEmailSection -Title "Abastecimiento / Compras" -Html (Render-IssueListCards -Items @($Pulse.sections.abastecimiento)))
+$(New-MayuEmailSection -Title "Finanzas" -Html (Render-IssueListCards -Items @($Pulse.sections.finanzas)))
+$(New-MayuEmailSection -Title "Comercial" -Html (Render-IssueListCards -Items @($Pulse.sections.comercial)))
+$(New-MayuEmailSection -Title "Calidad / RF / Despacho" -Html (Render-IssueListCards -Items @($Pulse.sections.calidadRfDespacho)))
+<p style="margin-top:24px;font-size:12px;color:#777;">$apps</p>
+"@
+  New-MayuEmailLayout -Title "Pulso gerencial MAYU - $($Pulse.date)" -Subtitle "Resumen ejecutivo diario desde ERP MAYU." -ContentHtml $content -Footer "Generado por MAYU Agents. Secciones parciales no inventan datos; solo reportan lo que existe en Firestore."
+}
+
 function Render-PulseHtml {
   param([object]$Config, [object]$Pulse)
+  return Render-PulseHtmlV2 -Config $Config -Pulse $Pulse
   $s = $Pulse.summary
   $links = $Config.sharepoint.links
   $decisionHtml = if (@($Pulse.decisionesFelixHoy).Count -eq 0) {
@@ -2056,7 +2246,7 @@ function Invoke-DailyPulse {
   $data = Get-FirestoreData -Config $Config
   Write-Output "Pulso: construyendo analisis."
   $pulse = Build-Pulse -Config $Config -Data $data -Now $Now
-  $html = Render-PulseHtml -Config $Config -Pulse $pulse
+  $html = Render-PulseHtmlV2 -Config $Config -Pulse $pulse
   $json = $pulse | ConvertTo-Json -Depth 80
   $dateKey = $pulse.date
   Ensure-GraphFolder -Token $GraphToken -SiteId $SiteId -FolderPath $Config.sharepoint.pulso_folder
@@ -2086,13 +2276,18 @@ Write-Output "MAYU Agents iniciado. Modo=$Mode Fecha=$($now.ToString("yyyy-MM-dd
 Ensure-GraphFolder -Token $graphToken -SiteId $siteId -FolderPath $config.sharepoint.base_folder
 
 if ($Mode -eq "test") {
-  $body = "<html><body><p>MAYU Agents operativo.</p><p>Hora MAYU: $($now.ToString("yyyy-MM-dd HH:mm"))</p></body></html>"
+  $body = New-MayuEmailLayout -Title "MAYU Agents operativo" -Subtitle "Prueba de correo del runtime operacional." -ContentHtml "<p>Hora MAYU: $($now.ToString("yyyy-MM-dd HH:mm"))</p>" -Footer "Generado por MAYU Agents."
   if ($SendEmail) {
     Send-GraphMail -Token $graphToken -Sender $config.mail.sender -To @($config.mail.felix) -Cc @() -Subject "Prueba MAYU Agents" -HtmlBody $body
     Write-Output "Prueba enviada a $($config.mail.felix)."
   } else {
     Write-Output "Prueba OK sin correo."
   }
+} elseif ($Mode -eq "morning_reports") {
+  Write-Output "Reportes manana: Pulso + Bodega/Materiales + Finanzas."
+  Invoke-DailyPulse -Config $config -GraphToken $graphToken -SiteId $siteId -Now $now -DoSendEmail $SendEmail
+  Invoke-BodegaMateriales -Config $config -GraphToken $graphToken -SiteId $siteId -Now $now -DoSendEmail $SendEmail
+  Invoke-Finanzas -Config $config -GraphToken $graphToken -SiteId $siteId -Now $now -DoSendEmail $SendEmail
 } elseif ($Mode -eq "daily_pulse") {
   Invoke-DailyPulse -Config $config -GraphToken $graphToken -SiteId $siteId -Now $now -DoSendEmail $SendEmail
 } elseif ($Mode -eq "bodega_materiales") {
