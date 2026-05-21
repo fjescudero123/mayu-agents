@@ -13,6 +13,7 @@
     "biblia_folder": "agentes_mayu/biblia_proyecto",
     "traspaso_folder": "agentes_mayu/traspaso_control_operacion",
     "bodega_materiales_folder": "agentes_mayu/bodega_materiales",
+    "finanzas_folder": "agentes_mayu/finanzas",
     "minutas_seguimiento_folder": "minutas_archivadas/seguimiento_compromisos",
     "links": {
       "hub": "https://mayu-hub.netlify.app/",
@@ -38,6 +39,7 @@
     "crm_billing": "billing",
     "mat_projects": "mat_projects",
     "mat_cotizaciones": "mat_cotizaciones",
+    "mat_oc_headers": "mat_oc_headers",
     "mat_ordenes": "mat_ordenes",
     "mat_recepciones": "mat_recepciones",
     "mat_entregas": "mat_entregas",
@@ -56,7 +58,15 @@
     "fin_saldos_bancarios": "fin_saldos_bancarios",
     "fin_proveedores": "fin_proveedores",
     "fin_proyectos_cerrados": "fin_proyectos_cerrados",
-    "fin_tarjetas_credito": "fin_tarjetas_credito"
+    "fin_tarjetas_credito": "fin_tarjetas_credito",
+    "fin_importaciones": "fin_importaciones",
+    "fin_rcv_alertas": "fin_rcv_alertas",
+    "fin_banco_alertas": "fin_banco_alertas",
+    "fin_boletas_honorarios": "fin_boletas_honorarios",
+    "fin_honorarios_alertas": "fin_honorarios_alertas",
+    "fin_cierres_mensuales": "fin_cierres_mensuales",
+    "fin_eerr_oficial": "fin_eerr_oficial",
+    "fin_balance_oficial": "fin_balance_oficial"
   },
   "doc_requirements": {
     "bom": { "area": "ingenieria", "doc_ids": ["i1"], "owner": "Martin" },
@@ -76,6 +86,11 @@
     "ar_overdue_days": 0,
     "max_items_per_section": 12,
     "max_finance_overdue_items": 8,
+    "finance_source_stale_days_red": 7,
+    "finance_source_stale_days_yellow": 3,
+    "finance_source_auto_stale_days_red": 3,
+    "finance_source_auto_stale_days_yellow": 2,
+    "finance_max_untrusted_report_issues": 3,
     "max_inventory_examples": 8,
     "bodega_materiales_similarity_threshold": 0.7,
     "bodega_materiales_duplicate_threshold": 0.85,
@@ -97,6 +112,13 @@
     "bodega_materiales": {
       "enabled": true,
       "send_email_default": false
+    },
+    "finanzas": {
+      "enabled": true,
+      "send_email_default": true
+    },
+    "finanzas_respuestas": {
+      "enabled": true
     }
   }
 }

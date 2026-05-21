@@ -2,6 +2,13 @@
 
 Repositorio operacional para agentes autonomos MAYU.
 
+Este repo es el runtime productivo de agentes MAYU. Las automatizaciones locales de Codex no son la fuente oficial; solo pueden usarse como respaldo transitorio o consola de mantenimiento.
+
+Gobierno operativo en el workspace MAYU:
+
+- `estrategia/agentes/REGISTRO_AGENTES_MAYU.md`
+- `estrategia/agentes/MIGRACION_CODEX_A_MAYU.md`
+
 El fiscalizador de reuniones corre directamente en GitHub Actions. Ya no necesita Azure Automation, Azure login ni despliegue de runbook para su operacion normal.
 
 ## Que ejecuta

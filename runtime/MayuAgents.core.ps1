@@ -1,5 +1,5 @@
 param(
-  [ValidateSet("daily_pulse", "biblia_proyecto", "traspaso_control_operacion", "bodega_materiales", "test")]
+  [ValidateSet("daily_pulse", "biblia_proyecto", "traspaso_control_operacion", "bodega_materiales", "finanzas", "finanzas_respuestas", "test")]
   [string]$Mode = "daily_pulse",
   [string]$Date = "",
   [bool]$SendEmail = $true
@@ -133,6 +133,33 @@ function Send-GraphMail {
   } | Out-Null
 }
 
+function Send-GraphReply {
+  param(
+    [string]$Token,
+    [string]$Sender,
+    [string]$MessageId,
+    [string]$Comment
+  )
+  Invoke-GraphJson -Token $Token -Method Post -Uri "https://graph.microsoft.com/v1.0/users/$Sender/messages/$MessageId/reply" -Body @{
+    comment = $Comment
+  } | Out-Null
+}
+
+function Set-GraphMessageRead {
+  param([string]$Token, [string]$Sender, [string]$MessageId)
+  Invoke-GraphJson -Token $Token -Method Patch -Uri "https://graph.microsoft.com/v1.0/users/$Sender/messages/$MessageId" -Body @{
+    isRead = $true
+  } | Out-Null
+}
+
+function Get-GraphUnreadInboxMessages {
+  param([string]$Token, [string]$Sender, [int]$Top = 25)
+  $select = "id,subject,from,receivedDateTime,bodyPreview,isRead"
+  $uri = "https://graph.microsoft.com/v1.0/users/$Sender/mailFolders/inbox/messages?`$top=$Top&`$orderby=receivedDateTime desc&`$select=$select"
+  $resp = Invoke-GraphGet -Token $Token -Uri $uri
+  @($resp.value | Where-Object { $_.isRead -eq $false })
+}
+
 function Get-Mayutime {
   param([string]$TimeZoneName)
   $candidateIds = @($TimeZoneName, "Pacific SA Standard Time", "Chile Standard Time")
@@ -149,6 +176,71 @@ function Get-Mayutime {
 function HtmlEscape {
   param([object]$Value)
   [System.Net.WebUtility]::HtmlEncode([string]$Value)
+}
+
+function Get-MayuEmailTone {
+  param([string]$Tone)
+  switch (([string]$Tone).ToLowerInvariant()) {
+    "rojo" { return [pscustomobject]@{ label = "Rojo"; accent = "#d92d20"; bg = "#fff5f5"; soft = "#fef3f2" } }
+    "critico" { return [pscustomobject]@{ label = "Critico"; accent = "#d92d20"; bg = "#fff5f5"; soft = "#fef3f2" } }
+    "amarillo" { return [pscustomobject]@{ label = "Amarillo"; accent = "#d97706"; bg = "#fffbeb"; soft = "#fef7e0" } }
+    "alto" { return [pscustomobject]@{ label = "Alto"; accent = "#d97706"; bg = "#fffbeb"; soft = "#fef7e0" } }
+    "medio" { return [pscustomobject]@{ label = "Medio"; accent = "#ca8a04"; bg = "#fffbeb"; soft = "#fef7e0" } }
+    "bajo" { return [pscustomobject]@{ label = "Bajo"; accent = "#2563eb"; bg = "#f4f7fb"; soft = "#eef4ff" } }
+    "verde" { return [pscustomobject]@{ label = "Verde"; accent = "#168a50"; bg = "#f0fdf4"; soft = "#ecfdf3" } }
+    default { return [pscustomobject]@{ label = "Info"; accent = "#2563eb"; bg = "#f4f7fb"; soft = "#eef4ff" } }
+  }
+}
+
+function New-MayuEmailMetric {
+  param([string]$Label, [object]$Value, [string]$Tone = "info")
+  $toneInfo = Get-MayuEmailTone -Tone $Tone
+  "<td style='padding:0 8px 8px 0;vertical-align:top;'><div style='border:1px solid #e5e7eb;border-left:4px solid $($toneInfo.accent);background:#ffffff;padding:10px 12px;min-width:110px;'><div style='font-size:11px;line-height:1.25;color:#6b7280;text-transform:uppercase;letter-spacing:.3px;'>$(HtmlEscape $Label)</div><div style='font-size:22px;line-height:1.15;color:#202124;font-weight:700;margin-top:3px;'>$(HtmlEscape $Value)</div></div></td>"
+}
+
+function New-MayuEmailSection {
+  param([string]$Title, [string]$Html)
+  @"
+<div style="margin-top:22px;">
+  <h3 style="font-size:16px;line-height:1.3;color:#202124;margin:0 0 10px 0;">$(HtmlEscape $Title)</h3>
+  $Html
+</div>
+"@
+}
+
+function New-MayuEmptyState {
+  param([string]$Text)
+  "<div style='border:1px solid #d9eadf;border-left:4px solid #168a50;background:#f7fbf8;padding:12px 14px;color:#234234;'>$(HtmlEscape $Text)</div>"
+}
+
+function New-MayuEmailLayout {
+  param([string]$Title, [string]$Subtitle, [string]$ContentHtml, [string]$Footer = "Generado por MAYU Agents.")
+  @"
+<html>
+<body style="margin:0;padding:0;background:#f6f8fb;font-family:Arial,sans-serif;color:#202124;font-size:14px;line-height:1.45;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f6f8fb;padding:20px 0;">
+    <tr>
+      <td align="center">
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:980px;background:#ffffff;border:1px solid #e5e7eb;">
+          <tr>
+            <td style="border-left:4px solid #0078d4;background:#f4f7fb;padding:18px 22px;">
+              <h2 style="font-size:22px;line-height:1.25;color:#202124;margin:0 0 4px 0;">$(HtmlEscape $Title)</h2>
+              <p style="margin:0;color:#5f6368;">$(HtmlEscape $Subtitle)</p>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:20px 22px;">
+              $ContentHtml
+              <p style="font-size:12px;line-height:1.4;color:#777;margin:28px 0 0 0;">$(HtmlEscape $Footer)</p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
+"@
 }
 
 function Get-Number {
@@ -413,6 +505,30 @@ function Get-GateStatus {
         responsable = $_.owner
       }
     })
+  }
+}
+
+function New-FinanceIssue {
+  param(
+    [string]$Code,
+    [ValidateSet("rojo", "amarillo", "info")]
+    [string]$Severity,
+    [string]$Area,
+    [string]$Title,
+    [string]$Detail,
+    [string]$Owner = "",
+    [string]$Action = "",
+    [string]$Ref = ""
+  )
+  [pscustomobject]@{
+    code = $Code
+    severity = $Severity
+    area = $Area
+    title = $Title
+    detail = $Detail
+    owner = $Owner
+    action = $Action
+    ref = $Ref
   }
 }
 
@@ -727,6 +843,22 @@ function Get-TextSimilarity {
   [double]$intersection / [double]$union
 }
 
+function Get-NumberTokens {
+  param([object]$Value)
+  $text = ([string]$Value).ToLowerInvariant()
+  @([regex]::Matches($text, "\d+(?:[.,]\d+)?") | ForEach-Object { $_.Value -replace ",", "." } | Select-Object -Unique)
+}
+
+function Test-MeaningfullyDifferentSpecs {
+  param([object]$A, [object]$B)
+  $aNums = @(Get-NumberTokens $A)
+  $bNums = @(Get-NumberTokens $B)
+  if ($aNums.Count -eq 0 -or $bNums.Count -eq 0) { return $false }
+  $a = ($aNums | Sort-Object) -join "|"
+  $b = ($bNums | Sort-Object) -join "|"
+  $a -ne $b
+}
+
 function New-BodegaIssue {
   param(
     [string]$CheckId,
@@ -832,6 +964,11 @@ function Build-BodegaMaterialesReport {
     if ($c.code) { [void]$catalogCodes.Add([string]$c.code) }
     if ($c.legacy) { [void]$legacyCodes.Add([string]$c.legacy) }
   }
+  $ocBomCodes = New-Object System.Collections.Generic.HashSet[string]
+  foreach ($oc in @($Data.mat_ordenes)) {
+    $ocItemCode = Get-FirstText $oc @("bomItemCode", "itemCode", "matchCode", "code")
+    if ($ocItemCode) { [void]$ocBomCodes.Add([string]$ocItemCode) }
+  }
   $similarThreshold = Get-Number $Config.thresholds.bodega_materiales_similarity_threshold 0.7
   $dupThreshold = Get-Number $Config.thresholds.bodega_materiales_duplicate_threshold 0.85
   $deliveryDays = [int](Get-Number $Config.thresholds.bodega_materiales_delivery_days 7)
@@ -918,6 +1055,8 @@ function Build-BodegaMaterialesReport {
   }
 
   foreach ($mov in @($Data.inv_movimientos)) {
+    if ($mov.anulado -eq $true -or $mov.ignorarAuditoria -eq $true) { continue }
+    if ($mov.stockGeneral -eq $true -or $mov.auditoriaBodegaMaterialesExcepcion -eq $true) { continue }
     $movId = Get-FirstText $mov @("id", "movementId")
     $tipo = Get-FirstText $mov @("tipo", "type")
     $skuCode = Get-FirstText $mov @("skuCode", "code", "itemCode")
@@ -927,14 +1066,21 @@ function Build-BodegaMaterialesReport {
     $itemCode = Get-FirstText $mov @("bomItemCode", "itemCode", "matchCode")
     if ($mov.refDoc) {
       if (-not $ocId) { $ocId = Get-FirstText $mov.refDoc @("ocId", "ordenId") }
+      if (-not $ocId -and (Get-FirstText $mov.refDoc @("tipo")) -eq "mat_orden") { $ocId = Get-FirstText $mov.refDoc @("id") }
       if (-not $recId) { $recId = Get-FirstText $mov.refDoc @("recepcionId", "receiptId") }
       if (-not $itemCode) { $itemCode = Get-FirstText $mov.refDoc @("bomItemCode", "itemCode") }
     }
-    if ($tipo -in @("recepcion_oc", "ingreso_directo") -and ([string]::IsNullOrWhiteSpace($projectId) -or [string]::IsNullOrWhiteSpace($skuCode))) {
+    if ($tipo -in @("recepcion_oc", "ingreso_directo") -and [string]::IsNullOrWhiteSpace($skuCode)) {
       Add-BodegaIssue $issues (New-BodegaIssue "B-0005" "CRITICO" "Trazabilidad" "Movimiento sin identidad completa" "Movimiento $movId tipo $tipo no conserva proyecto/SKU suficientes." "Mauricio" "Completar trazabilidad en movimiento o corregir recepcion origen." $movId)
+    } elseif ($tipo -eq "recepcion_oc" -and [string]::IsNullOrWhiteSpace($projectId)) {
+      Add-BodegaIssue $issues (New-BodegaIssue "B-0005" "CRITICO" "Trazabilidad" "Movimiento sin proyecto" "Movimiento $movId tipo recepcion_oc no conserva proyecto." "Mauricio" "Completar proyecto desde OC/recepcion origen." $movId)
+    } elseif ($tipo -eq "ingreso_directo" -and [string]::IsNullOrWhiteSpace($projectId)) {
+      Add-BodegaIssue $issues (New-BodegaIssue "B-0005" "ALTO" "Trazabilidad" "Ingreso directo sin proyecto" "Movimiento $movId tipo ingreso_directo tiene SKU, pero no proyecto." "Mauricio / Carlos" "Confirmar si es stock general; si corresponde a proyecto, vincularlo a OC/BOM." $movId)
     }
-    if ($tipo -eq "recepcion_oc" -and ([string]::IsNullOrWhiteSpace($ocId) -or [string]::IsNullOrWhiteSpace($recId) -or [string]::IsNullOrWhiteSpace($itemCode))) {
+    if ($tipo -eq "recepcion_oc" -and ([string]::IsNullOrWhiteSpace($ocId) -or [string]::IsNullOrWhiteSpace($itemCode))) {
       Add-BodegaIssue $issues (New-BodegaIssue "B-0005" "CRITICO" "Trazabilidad" "Kardex sin OC/recepcion/BOM" "Movimiento $movId no hereda ocId, recepcionId y bomItemCode." "Mauricio / Felix" "Corregir app para heredar campos y regularizar movimiento." $movId)
+    } elseif ($tipo -eq "recepcion_oc" -and [string]::IsNullOrWhiteSpace($recId)) {
+      Add-BodegaIssue $issues (New-BodegaIssue "B-0005" "ALTO" "Trazabilidad" "Kardex historico sin recepcionId" "Movimiento $movId conserva OC y BOM, pero no tiene recepcionId historico." "Mauricio / Felix" "Mantener como pendiente historico o asociar recepcion si existe evidencia." $movId)
     }
     if ($tipo -eq "ingreso_directo") {
       $desc = Get-FirstText $mov @("descSku", "description", "descripcion", "itemDesc")
@@ -946,9 +1092,6 @@ function Build-BodegaMaterialesReport {
   }
 
   foreach ($c in $catalogItems) {
-    if ($c.legacy -and -not $bomCodes.Contains($c.legacy)) {
-      Add-BodegaIssue $issues (New-BodegaIssue "B-A01" "CRITICO" "Catalogo" "SKU apunta a BOM inexistente" "$($c.code) tiene codigoLegacy $($c.legacy), pero ese codigo no existe en BOM activo." "Mauricio / Carlos" "Corregir codigoLegacy o archivar SKU si es legado." $c.code)
-    }
     if (-not $c.legacy -and $c.desc) {
       $similarBom = @($bomItems | Where-Object { (Get-TextSimilarity $c.desc $_.desc) -ge $similarThreshold } | Select-Object -First 1)
       if ($similarBom.Count -gt 0) {
@@ -975,6 +1118,7 @@ function Build-BodegaMaterialesReport {
   for ($i = 0; $i -lt $catalogItems.Count; $i++) {
     for ($j = $i + 1; $j -lt $catalogItems.Count; $j++) {
       if ([string]::IsNullOrWhiteSpace($catalogItems[$i].desc) -or [string]::IsNullOrWhiteSpace($catalogItems[$j].desc)) { continue }
+      if (Test-MeaningfullyDifferentSpecs $catalogItems[$i].desc $catalogItems[$j].desc) { continue }
       if ((Get-TextSimilarity $catalogItems[$i].desc $catalogItems[$j].desc) -ge $dupThreshold) {
         Add-BodegaIssue $issues (New-BodegaIssue "B-A04" "ALTO" "Catalogo" "SKUs posiblemente duplicados" "$($catalogItems[$i].code) y $($catalogItems[$j].code) tienen descripciones casi identicas." "Mauricio / Carlos" "Unificar identidad o documentar diferencia fisica." "$($catalogItems[$i].code)|$($catalogItems[$j].code)")
         if (@($issues | Where-Object { $_.checkId -eq "B-A04" }).Count -ge 10) { break }
@@ -985,7 +1129,10 @@ function Build-BodegaMaterialesReport {
   foreach ($b in $bomItems) {
     $hasStrict = ($b.code -and ($legacyCodes.Contains($b.code) -or $catalogCodes.Contains($b.code))) -or ($b.skuCode -and $catalogCodes.Contains($b.skuCode))
     if (-not $hasStrict) {
-      Add-BodegaIssue $issues (New-BodegaIssue "B-B01" "CRITICO" "BOM-Catalogo" "Item BOM sin match estricto en catalogo" "$($b.projectName): $($b.code) '$($b.desc)' no tiene codigoLegacy/code/SKU estricto en catalogo." "Carlos / Mauricio" "Crear o linkear SKU de bodega antes de comprar/recepcionar." "$($b.matProjectId)|$($b.code)")
+      $usedInOc = $b.code -and $ocBomCodes.Contains([string]$b.code)
+      if ($usedInOc) {
+        Add-BodegaIssue $issues (New-BodegaIssue "B-B01" "CRITICO" "BOM-Catalogo" "Item BOM sin match estricto en catalogo" "$($b.projectName): $($b.code) '$($b.desc)' no tiene codigoLegacy/code/SKU estricto en catalogo." "Carlos / Mauricio" "Crear o linkear SKU de bodega antes de comprar/recepcionar." "$($b.matProjectId)|$($b.code)")
+      }
     }
   }
 
@@ -1133,6 +1280,7 @@ function Write-BodegaPprPvcCandidates {
 
 function Render-BodegaMaterialesHtml {
   param([object]$Report)
+  return Render-BodegaMaterialesHtmlV2 -Report $Report
   $s = $Report.summary
   $rows = Render-IssueList -Items @($Report.issues | Select-Object -First 80)
   @"
@@ -1169,7 +1317,7 @@ function Invoke-BodegaMateriales {
   foreach ($issue in @($report.issues | Select-Object -First 25)) {
     Write-Output "Bodega+Materiales alerta: [$($issue.level)] $($issue.checkId) $($issue.title) | $($issue.ref) | $($issue.action)"
   }
-  $html = Render-BodegaMaterialesHtml -Report $report
+  $html = Render-BodegaMaterialesHtmlV2 -Report $report
   $dateKey = $report.date
   Ensure-GraphFolder -Token $GraphToken -SiteId $SiteId -FolderPath $Config.sharepoint.bodega_materiales_folder
   Write-TextFileToGraph -Token $GraphToken -SiteId $SiteId -FilePath "$($Config.sharepoint.bodega_materiales_folder)/$dateKey.json" -Text ($report | ConvertTo-Json -Depth 80) -ContentType "application/json; charset=utf-8"
@@ -1189,12 +1337,107 @@ function Get-FinanceIssues {
   param([object]$Config, [object]$Data, [datetime]$Now)
   $issues = [System.Collections.ArrayList]::new()
   $today = $Now.ToString("yyyy-MM-dd")
+  function Get-MaxIsoDateFinanzas([object[]]$Rows, [string]$FieldName) {
+    $dates = @($Rows | ForEach-Object {
+      $prop = $_.PSObject.Properties[$FieldName]
+      if ($prop -and -not [string]::IsNullOrWhiteSpace([string]$prop.Value)) { [string]$prop.Value }
+    } | Sort-Object)
+    if ($dates.Count -eq 0) { return "" }
+    [string]$dates[-1]
+  }
+  function Get-LatestImportFinanzas([object[]]$Rows, [string]$Tipo) {
+    @($Rows | Where-Object { [string]$_.tipo -eq $Tipo } | Sort-Object { -1 * (Get-Number $_.createdAt) } | Select-Object -First 1)
+  }
+  function Get-LatestFinanceSourceRun([object[]]$Rows) {
+    @($Rows | Sort-Object {
+      $candidates = @("createdAt", "finishedAt", "startedAt", "fecha", "periodo", "updatedAt")
+      $best = ""
+      foreach ($field in $candidates) {
+        $prop = $_.PSObject.Properties[$field]
+        if ($prop -and -not [string]::IsNullOrWhiteSpace([string]$prop.Value)) {
+          $best = [string]$prop.Value
+          break
+        }
+      }
+      $best
+    } -Descending | Select-Object -First 1)
+  }
+  function Get-RunLabelFinanzas([object]$Run) {
+    if ($null -eq $Run) { return "sin bitacora automatica" }
+    $parts = @()
+    foreach ($field in @("estado", "status", "resultado", "periodo", "provider", "origen", "createdAt", "finishedAt", "fecha")) {
+      $prop = $Run.PSObject.Properties[$field]
+      if ($prop -and -not [string]::IsNullOrWhiteSpace([string]$prop.Value)) {
+        $parts += "$field=$($prop.Value)"
+      }
+    }
+    if ($parts.Count -eq 0) { return "bitacora sin campos legibles" }
+    ($parts | Select-Object -First 5) -join "; "
+  }
+  function Test-FinanceSourceError([object]$Run) {
+    if ($null -eq $Run) { return $false }
+    $text = @($Run.PSObject.Properties | ForEach-Object { [string]$_.Value }) -join " "
+    return ($text -match "ERROR|FALL|INVALID|RECHAZ|BLOQUE|Credenciales|conectar")
+  }
+  function Add-FuenteFinancieraIssue([string]$Nombre, [string]$TipoImportacion, [string]$FechaMaxima, [int]$DiasRojo, [int]$DiasAmarillo, [object[]]$Runs = @(), [string]$Ref = "fin_importaciones") {
+    $latestRun = @(Get-LatestFinanceSourceRun -Rows @($Runs) | Select-Object -First 1)
+    if ($latestRun.Count -gt 0 -and (Test-FinanceSourceError -Run $latestRun[0])) {
+      Add-Issue $issues (New-FinanceIssue -Code "F-AUTO01" -Severity "rojo" -Area "Confiabilidad" -Title "Fuente automatica con error: $Nombre" -Detail "La ultima bitacora muestra un problema: $(Get-RunLabelFinanzas $latestRun[0]). Los numeros dependientes de esta fuente no deben tratarse como cierre." -Owner "Valentina / Felix" -Action "Revisar Finanzas > Automatizaciones; si es BaseAPI/Clay, validar bitacora y reintento supervisado antes de usar el reporte como confiable." -Ref $Ref)
+      return
+    }
+    if ([string]::IsNullOrWhiteSpace($FechaMaxima)) {
+      $runLabel = if ($latestRun.Count -gt 0) { Get-RunLabelFinanzas $latestRun[0] } else { "sin bitacora visible" }
+      Add-Issue $issues (New-FinanceIssue -Code "F-AUTO02" -Severity "rojo" -Area "Confiabilidad" -Title "Fuente sin datos: $Nombre" -Detail "No hay datos operativos para $Nombre ($runLabel). El analisis financiero queda incompleto." -Owner "Valentina" -Action "Revisar Finanzas > Automatizaciones. La carga manual queda solo como respaldo/correccion, no como flujo normal." -Ref $Ref)
+      return
+    }
+    $dias = [int](New-TimeSpan -Start ([datetime]::Parse($FechaMaxima)) -End $Now.Date).TotalDays
+    if ($dias -lt $DiasAmarillo) { return }
+    $latest = @(Get-LatestImportFinanzas -Rows @($Data.fin_importaciones) -Tipo $TipoImportacion | Select-Object -First 1)
+    $archivo = if ($latest.Count -gt 0) { [string]$latest[0].archivo } else { "sin registro de importacion" }
+    $importado = if ($latest.Count -gt 0 -and $latest[0].createdAt) {
+      ([DateTimeOffset]::FromUnixTimeMilliseconds([int64](Get-Number $latest[0].createdAt))).ToString("yyyy-MM-dd")
+    } else {
+      "sin fecha"
+    }
+    $sev = if ($dias -ge $DiasRojo) { "rojo" } else { "amarillo" }
+    $runLabel = if ($latestRun.Count -gt 0) { Get-RunLabelFinanzas $latestRun[0] } else { "ultima importacion: $archivo / $importado" }
+    Add-Issue $issues (New-FinanceIssue -Code "F-AUTO03" -Severity $sev -Area "Confiabilidad" -Title "Fuente desactualizada: $Nombre" -Detail "$Nombre tiene datos hasta $FechaMaxima ($dias dia(s) sin datos nuevos). Bitacora: $runLabel." -Owner "Valentina" -Action "Revisar Finanzas > Automatizaciones y confirmar que el job automatico corrio. Si no corrio, reintentar fuente; si corrio sin novedades, dejar evidencia." -Ref $Ref)
+  }
+  function Test-MovimientoBancoExplicado([object]$Mov) {
+    return [bool]($Mov.conciliado -or $Mov.pagoId -or $Mov.cobranzaId -or $Mov.linkNomina -or $Mov.linkOperacional)
+  }
+  function Test-RespaldoPendienteBanco([object]$Mov) {
+    if (-not $Mov.linkOperacional) { return $false }
+    $estado = [string]$Mov.linkOperacional.respaldoEstado
+    $notas = [string]$Mov.linkOperacional.notas
+    return ($estado -in @("PENDIENTE", "BLOQUEADO") -or $notas.Contains("mantener como excepcion"))
+  }
+  function Get-FirstPositiveNumber([object[]]$Values) {
+    foreach ($value in @($Values)) {
+      $n = Get-Number $value
+      if ($n -gt 0) { return $n }
+    }
+    0
+  }
+  function Test-NotaCreditoFinanzas([object]$Factura) {
+    $tipo = [int](Get-Number $Factura.tipoDte)
+    return ($tipo -eq 61 -or $tipo -eq 112)
+  }
+  function Test-ControlEspecialFinanzas([object]$Factura) {
+    return (([string]$Factura.tratamientoFinanciero) -eq "CONSIGNACION" -or ([string]$Factura.auditoriaFinanzasEstado) -eq "CONTROL_ESPECIAL")
+  }
   $apSinProyecto = @()
   $apSinClasificar = @()
   $apVencidas = @()
   $arSinProyecto = @()
   $arVencidas = @()
+  $movCargosSinConciliar = @()
+  $movAbonosSinConciliar = @()
+  $movRespaldoPendiente = @()
+  $apSinCuenta = @()
+  $apRespaldoTributarioPendiente = @()
   foreach ($f in @($Data.fin_facturas_ap)) {
+    if ((Test-NotaCreditoFinanzas $f) -or (Test-ControlEspecialFinanzas $f)) { continue }
     $estado = [string]$f.estado
     if (@("PAGADA","ANULADA","RECHAZADA") -contains $estado) { continue }
     if ((-not $f.proyectoId) -and (-not $f.asignaciones) -and ([string]$f.lineaNegocio) -ne "OPEX_CORP" -and ([string]$f.categoriaContable) -notin @("OPEX_FIJO","OPEX_VARIABLE")) {
@@ -1203,11 +1446,18 @@ function Get-FinanceIssues {
     if ([string]$f.lineaNegocio -eq "SIN_CLASIFICAR") {
       $apSinClasificar += $f
     }
+    if ([string]::IsNullOrWhiteSpace([string]$f.cuentaContable)) {
+      $apSinCuenta += $f
+    }
+    if ([string]$f.validacionTributariaEstado -in @("PENDIENTE_RCV_DTE", "PENDIENTE_RCV", "PENDIENTE_DTE")) {
+      $apRespaldoTributarioPendiente += $f
+    }
     if ($f.fechaVencimiento -and [string]$f.fechaVencimiento -lt $today) {
       $apVencidas += $f
     }
   }
   foreach ($f in @($Data.fin_facturas_ar)) {
+    if (Test-NotaCreditoFinanzas $f) { continue }
     $estado = [string]$f.estado
     if (@("COBRADA","ANULADA") -contains $estado) { continue }
     if ((-not $f.crmProjectId) -and (-not $f.proyectoId) -and (-not $f.asignaciones)) {
@@ -1217,44 +1467,542 @@ function Get-FinanceIssues {
       $arVencidas += $f
     }
   }
+  foreach ($m in @($Data.fin_mov_bancarios)) {
+    if (Test-RespaldoPendienteBanco $m) {
+      $movRespaldoPendiente += $m
+      continue
+    }
+    if (Test-MovimientoBancoExplicado $m) { continue }
+    $cargo = Get-Number $m.cargo
+    $abono = Get-Number $m.abono
+    if ($cargo -gt 0) {
+      $movCargosSinConciliar += $m
+    } elseif ($abono -gt 0) {
+      $movAbonosSinConciliar += $m
+    }
+  }
+  $diasRojo = [int](Get-Number $Config.thresholds.finance_source_auto_stale_days_red 3)
+  $diasAmarillo = [int](Get-Number $Config.thresholds.finance_source_auto_stale_days_yellow 2)
+  Add-FuenteFinancieraIssue -Nombre "Banco BICE / Clay" -TipoImportacion "CARTOLA_BICE" -FechaMaxima (Get-MaxIsoDateFinanzas -Rows @($Data.fin_mov_bancarios) -FieldName "fecha") -DiasRojo $diasRojo -DiasAmarillo $diasAmarillo -Runs @($Data.fin_banco_alertas) -Ref "fin_banco_alertas"
+  Add-FuenteFinancieraIssue -Nombre "RCV Compras / BaseAPI" -TipoImportacion "RCV_COMPRAS" -FechaMaxima (Get-MaxIsoDateFinanzas -Rows @($Data.fin_facturas_ap) -FieldName "fechaEmision") -DiasRojo $diasRojo -DiasAmarillo $diasAmarillo -Runs @($Data.fin_rcv_alertas) -Ref "fin_rcv_alertas"
+  Add-FuenteFinancieraIssue -Nombre "RCV Ventas / BaseAPI" -TipoImportacion "RCV_VENTAS" -FechaMaxima (Get-MaxIsoDateFinanzas -Rows @($Data.fin_facturas_ar) -FieldName "fechaEmision") -DiasRojo $diasRojo -DiasAmarillo $diasAmarillo -Runs @($Data.fin_rcv_alertas) -Ref "fin_rcv_alertas"
+  Add-FuenteFinancieraIssue -Nombre "Honorarios SII / BaseAPI" -TipoImportacion "BHE_BASEAPI" -FechaMaxima (Get-MaxIsoDateFinanzas -Rows @($Data.fin_boletas_honorarios) -FieldName "fechaEmision") -DiasRojo 14 -DiasAmarillo 8 -Runs @($Data.fin_honorarios_alertas) -Ref "fin_honorarios_alertas"
+
+  $saldoMax = Get-MaxIsoDateFinanzas -Rows @($Data.fin_saldos_bancarios) -FieldName "updatedAt"
+  if ([string]::IsNullOrWhiteSpace($saldoMax)) {
+    $saldoMax = Get-MaxIsoDateFinanzas -Rows @($Data.fin_saldos_bancarios) -FieldName "fecha"
+  }
+  if ([string]::IsNullOrWhiteSpace($saldoMax) -and @($Data.fin_saldos_bancarios).Count -eq 0) {
+    Add-Issue $issues (New-FinanceIssue -Code "F-CONF01" -Severity "rojo" -Area "Confiabilidad" -Title "Caja hoy sin saldo bancario" -Detail "No hay snapshot de saldo bancario en fin_saldos_bancarios. La caja visible no debe usarse como saldo disponible confiable." -Owner "Valentina" -Action "Revisar Finanzas > Automatizaciones y Bancos; confirmar ultimo saldo Clay/BICE antes de decidir pagos." -Ref "fin_saldos_bancarios")
+  }
+
   $maxOverdue = [int]$Config.thresholds.max_finance_overdue_items
   if ($maxOverdue -le 0) { $maxOverdue = 8 }
+  if ($movCargosSinConciliar.Count -gt 0) {
+    $monto = ($movCargosSinConciliar | ForEach-Object { Get-Number $_.cargo } | Measure-Object -Sum).Sum
+    Add-Issue $issues (New-FinanceIssue -Code "F-B01" -Severity "rojo" -Area "Confiabilidad" -Title "Cargos bancarios sin destino operacional" -Detail "$($movCargosSinConciliar.Count) salida(s) de banco no estan conciliadas ni explicadas por link operacional/nomina, por aprox. $(Format-Clp $monto)." -Owner "Valentina / Felix" -Action "Entrar a Finanzas > Automatizaciones o Bancos y resolver destino operacional antes de confiar en caja, CxP pagada o EERR de gestion." -Ref "fin_mov_bancarios_cargos")
+  }
+  if ($movAbonosSinConciliar.Count -gt 0) {
+    $monto = ($movAbonosSinConciliar | ForEach-Object { Get-Number $_.abono } | Measure-Object -Sum).Sum
+    Add-Issue $issues (New-FinanceIssue -Code "F-B02" -Severity "rojo" -Area "Confiabilidad" -Title "Abonos bancarios sin destino operacional" -Detail "$($movAbonosSinConciliar.Count) entrada(s) de banco no estan conciliadas ni explicadas, por aprox. $(Format-Clp $monto)." -Owner "Valentina / Felix" -Action "Resolver como cobranza, aporte, prestamo, vale vista/rechazo o transferencia interna antes de usar CxC/caja como confiables." -Ref "fin_mov_bancarios_abonos")
+  }
+  if ($movRespaldoPendiente.Count -gt 0) {
+    $monto = ($movRespaldoPendiente | ForEach-Object { Get-FirstPositiveNumber @($_.linkOperacional.monto, $_.cargo, $_.abono) } | Measure-Object -Sum).Sum
+    $bloqueados = @($movRespaldoPendiente | Where-Object { [string]$_.linkOperacional.respaldoEstado -eq "BLOQUEADO" }).Count
+    Add-Issue $issues (New-FinanceIssue -Code "F-B03" -Severity "amarillo" -Area "Confiabilidad" -Title "Banco explicado con respaldo pendiente" -Detail "$($movRespaldoPendiente.Count) movimiento(s) ya tienen destino operacional, pero falta respaldo/documentacion por aprox. $(Format-Clp $monto). Bloqueados explicitos: $bloqueados." -Owner "Valentina" -Action "Trabajar Finanzas > Automatizaciones > Resolver respaldos pendientes. No tratar como cierre contable aunque el banco este operacionalmente explicado." -Ref "fin_mov_bancarios_respaldo")
+  }
   foreach ($f in @($apVencidas | Sort-Object { -1 * (Get-Number $_.montoTotal) } | Select-Object -First $maxOverdue)) {
-    Add-Issue $issues (New-Issue -Severity "rojo" -Area "Caja" -Title "CxP vencida" -Detail "$($f.razonSocialContraparte) folio $($f.folio) vencio $($f.fechaVencimiento), monto $(Format-Clp (Get-Number $f.montoTotal))." -Owner "Valentina / Felix" -Action "Decidir pago o renegociacion." -Ref $f.id)
+    Add-Issue $issues (New-FinanceIssue -Code "F-CXP01" -Severity "rojo" -Area "Caja" -Title "CxP vencida" -Detail "$($f.razonSocialContraparte) folio $($f.folio) vencio $($f.fechaVencimiento), monto $(Format-Clp (Get-Number $f.montoTotal))." -Owner "Valentina / Felix" -Action "Decidir pago o renegociacion." -Ref $f.id)
   }
   if ($apVencidas.Count -gt $maxOverdue) {
     $rest = @($apVencidas | Sort-Object { -1 * (Get-Number $_.montoTotal) } | Select-Object -Skip $maxOverdue)
     $restMonto = ($rest | ForEach-Object { Get-Number $_.montoTotal } | Measure-Object -Sum).Sum
-    Add-Issue $issues (New-Issue -Severity "rojo" -Area "Caja" -Title "CxP vencida adicional agrupada" -Detail "$($rest.Count) factura(s) AP vencidas adicionales por aprox. $(Format-Clp $restMonto)." -Owner "Valentina / Felix" -Action "Revisar lista completa en Finanzas." -Ref "fin_facturas_ap")
+    Add-Issue $issues (New-FinanceIssue -Code "F-CXP02" -Severity "rojo" -Area "Caja" -Title "CxP vencida adicional agrupada" -Detail "$($rest.Count) factura(s) CxP vencidas adicionales por aprox. $(Format-Clp $restMonto)." -Owner "Valentina / Felix" -Action "Revisar lista completa en Finanzas." -Ref "fin_facturas_ap")
   }
   foreach ($f in @($arVencidas | Sort-Object { -1 * (Get-Number $_.montoTotal) } | Select-Object -First $maxOverdue)) {
-    Add-Issue $issues (New-Issue -Severity "rojo" -Area "Caja" -Title "CxC vencida" -Detail "$($f.razonSocialContraparte) folio $($f.folio) vencio $($f.fechaVencimiento), monto $(Format-Clp (Get-Number $f.montoTotal))." -Owner "Valentina / Comercial" -Action "Gestionar cobranza." -Ref $f.id)
+    Add-Issue $issues (New-FinanceIssue -Code "F-CXC01" -Severity "rojo" -Area "Caja" -Title "CxC vencida" -Detail "$($f.razonSocialContraparte) folio $($f.folio) vencio $($f.fechaVencimiento), monto $(Format-Clp (Get-Number $f.montoTotal))." -Owner "Valentina / Comercial" -Action "Gestionar cobranza." -Ref $f.id)
   }
   if ($arVencidas.Count -gt $maxOverdue) {
     $rest = @($arVencidas | Sort-Object { -1 * (Get-Number $_.montoTotal) } | Select-Object -Skip $maxOverdue)
     $restMonto = ($rest | ForEach-Object { Get-Number $_.montoTotal } | Measure-Object -Sum).Sum
-    Add-Issue $issues (New-Issue -Severity "rojo" -Area "Caja" -Title "CxC vencida adicional agrupada" -Detail "$($rest.Count) factura(s) AR vencidas adicionales por aprox. $(Format-Clp $restMonto)." -Owner "Valentina / Comercial" -Action "Revisar lista completa en Finanzas." -Ref "fin_facturas_ar")
+    Add-Issue $issues (New-FinanceIssue -Code "F-CXC02" -Severity "rojo" -Area "Caja" -Title "CxC vencida adicional agrupada" -Detail "$($rest.Count) factura(s) CxC vencidas adicionales por aprox. $(Format-Clp $restMonto)." -Owner "Valentina / Comercial" -Action "Revisar lista completa en Finanzas." -Ref "fin_facturas_ar")
   }
   if ($apSinProyecto.Count -gt 0) {
     $monto = ($apSinProyecto | ForEach-Object { Get-Number $_.montoTotal } | Measure-Object -Sum).Sum
-    Add-Issue $issues (New-Issue -Severity "amarillo" -Area "Finanzas" -Title "Facturas AP sin proyecto agrupadas" -Detail "$($apSinProyecto.Count) factura(s) AP sin proyecto por aprox. $(Format-Clp $monto). Pueden superponerse con sin clasificar." -Owner "Valentina" -Action "Clasificar por lote en Finanzas para destrabar costos por proyecto." -Ref "fin_facturas_ap")
+    Add-Issue $issues (New-FinanceIssue -Code "F-CXP03" -Severity "amarillo" -Area "Confiabilidad" -Title "AP sin proyecto/destino" -Detail "$($apSinProyecto.Count) factura(s) AP sin proyecto/destino por aprox. $(Format-Clp $monto). El margen por proyecto y linea no es plenamente confiable." -Owner "Valentina" -Action "Clasificar por lote en Finanzas o vincular contra OC MAYU/Materiales cuando corresponda." -Ref "fin_facturas_ap")
   }
   if ($apSinClasificar.Count -gt 0) {
     $monto = ($apSinClasificar | ForEach-Object { Get-Number $_.montoTotal } | Measure-Object -Sum).Sum
-    Add-Issue $issues (New-Issue -Severity "amarillo" -Area "Finanzas" -Title "Facturas AP sin clasificar agrupadas" -Detail "$($apSinClasificar.Count) factura(s) AP en SIN_CLASIFICAR por aprox. $(Format-Clp $monto)." -Owner "Valentina" -Action "Clasificar linea/cuenta/proyecto por lote." -Ref "fin_facturas_ap")
+    Add-Issue $issues (New-FinanceIssue -Code "F-CXP04" -Severity "amarillo" -Area "Confiabilidad" -Title "AP sin clasificacion MAYU" -Detail "$($apSinClasificar.Count) factura(s) AP estan en SIN_CLASIFICAR por aprox. $(Format-Clp $monto). El EERR de gestion queda incompleto." -Owner "Valentina" -Action "Resolver clasificacion MAYU: linea, categoria, cuenta y proyecto/OPEX. Convertir criterios repetibles en reglas aprobadas." -Ref "fin_facturas_ap")
+  }
+  if ($apSinCuenta.Count -gt 0) {
+    $monto = ($apSinCuenta | ForEach-Object { Get-Number $_.montoTotal } | Measure-Object -Sum).Sum
+    Add-Issue $issues (New-FinanceIssue -Code "F-CXP05" -Severity "amarillo" -Area "Confiabilidad" -Title "AP sin cuenta contable" -Detail "$($apSinCuenta.Count) factura(s) AP sin cuenta contable por aprox. $(Format-Clp $monto). El EERR formal/app vs CAZ no es plenamente conciliable." -Owner "Valentina" -Action "Completar cuenta contable o regla por proveedor antes de usar EERR formal como referencia de cierre." -Ref "fin_facturas_ap")
+  }
+  if ($apRespaldoTributarioPendiente.Count -gt 0) {
+    $monto = ($apRespaldoTributarioPendiente | ForEach-Object { Get-Number $_.montoTotal } | Measure-Object -Sum).Sum
+    Add-Issue $issues (New-FinanceIssue -Code "F-DTE01" -Severity "amarillo" -Area "Confiabilidad" -Title "AP con respaldo tributario pendiente" -Detail "$($apRespaldoTributarioPendiente.Count) factura(s) AP por aprox. $(Format-Clp $monto) estan cargadas como respaldo operacional pero pendientes de RCV/DTE." -Owner "Valentina / Felix" -Action "Mantenerlas como gestion, no cierre contable. Revisar bloqueo BaseAPI/DTE recibido o respaldo proveedor antes de cerrar el mes." -Ref "fin_facturas_ap_validacion")
   }
   if ($arSinProyecto.Count -gt 0) {
     $monto = ($arSinProyecto | ForEach-Object { Get-Number $_.montoTotal } | Measure-Object -Sum).Sum
-    Add-Issue $issues (New-Issue -Severity "amarillo" -Area "Finanzas" -Title "Facturas AR sin proyecto agrupadas" -Detail "$($arSinProyecto.Count) factura(s) AR sin proyecto por aprox. $(Format-Clp $monto)." -Owner "Valentina" -Action "Vincular a CRM/proyecto para lectura comercial y directorio." -Ref "fin_facturas_ar")
+    Add-Issue $issues (New-FinanceIssue -Code "F-CXC03" -Severity "amarillo" -Area "Finanzas" -Title "Facturas CxC sin proyecto agrupadas" -Detail "$($arSinProyecto.Count) factura(s) CxC sin proyecto por aprox. $(Format-Clp $monto)." -Owner "Valentina" -Action "Vincular a CRM/proyecto para lectura comercial y directorio." -Ref "fin_facturas_ar")
   }
+  $bhePendientes = @($Data.fin_boletas_honorarios | Where-Object { [string]$_.conciliacionEstado -ne "CONCILIADA" -and [string]$_.estado -ne "ANULADA" })
+  if ($bhePendientes.Count -gt 0) {
+    $monto = ($bhePendientes | ForEach-Object { Get-FirstPositiveNumber @($_.montoLiquido, $_.liquido, $_.montoTotal) } | Measure-Object -Sum).Sum
+    Add-Issue $issues (New-FinanceIssue -Code "F-BHE01" -Severity "amarillo" -Area "Confiabilidad" -Title "Boletas de honorarios sin conciliacion" -Detail "$($bhePendientes.Count) BHE/BaseAPI no estan conciliadas con banco, por aprox. $(Format-Clp $monto)." -Owner "Valentina" -Action "Revisar Finanzas > Automatizaciones y aprobar matches BH/BHE seguros contra banco; no duplicar como AP normal." -Ref "fin_boletas_honorarios")
+  }
+
   $ocPressure = 0.0
-  foreach ($oc in @($Data.mat_ordenes | Where-Object { ([string]$_.status) -notin @("total","recibida_total","cerrada","anulada") })) {
-    $ocPressure += ((Get-Number $oc.qty) * (Get-Number $oc.precioUnit))
+  $ocHeadersAbiertas = @($Data.mat_oc_headers | Where-Object { ([string]$_.estado) -notin @("cerrada","anulada","pagada") })
+  if ($ocHeadersAbiertas.Count -gt 0) {
+    foreach ($oc in $ocHeadersAbiertas) { $ocPressure += Get-Number $oc.total }
+  } else {
+    foreach ($oc in @($Data.mat_ordenes | Where-Object { ([string]$_.status) -notin @("total","recibida_total","cerrada","anulada") })) {
+      $ocPressure += ((Get-Number $oc.qty) * (Get-Number $oc.precioUnit))
+    }
   }
   if ($ocPressure -gt 0) {
-    Add-Issue $issues (New-Issue -Severity "info" -Area "Caja" -Title "Presion de OCs sobre caja" -Detail "OCs abiertas comprometen aprox. $([Math]::Round($ocPressure,0)) CLP." -Owner "Felix / Valentina" -Action "Contrastar contra flujo 13 semanas." -Ref "mat_ordenes")
+    $ref = if ($ocHeadersAbiertas.Count -gt 0) { "mat_oc_headers" } else { "mat_ordenes" }
+    Add-Issue $issues (New-FinanceIssue -Code "F-OC01" -Severity "info" -Area "Confiabilidad" -Title "Ciclo OC abierto impacta caja futura" -Detail "OCs abiertas comprometen aprox. $([Math]::Round($ocPressure,0)) CLP. Deben cruzarse con RCV, recepcion Bodega y pago banco para confiar en compromisos." -Owner "Felix / Valentina" -Action "Usar Finanzas > Automatizaciones/Ciclo OC para distinguir OC emitida, recibida, facturada y pagada. No mezclar compromiso con deuda vencida." -Ref $ref)
   }
   @($issues)
+}
+
+function Get-FinanzasConfidence {
+  param([object[]]$Issues)
+  $rojas = @($Issues | Where-Object { $_.severity -eq "rojo" }).Count
+  $amarillas = @($Issues | Where-Object { $_.severity -eq "amarillo" }).Count
+  $criticas = @($Issues | Where-Object { $_.severity -eq "rojo" -and $_.area -eq "Confiabilidad" }).Count
+  if ($criticas -gt 0 -or $rojas -ge 3) {
+    return [pscustomobject]@{
+      estado = "NO_USAR_PARA_DECISION"
+      label = "No usar para decision sin revisar"
+      tone = "rojo"
+      lectura = "Hay bloqueos de fuente, banco o datos que pueden distorsionar caja, EERR o reportes ejecutivos."
+    }
+  }
+  if ($rojas -gt 0 -or $amarillas -gt 0) {
+    return [pscustomobject]@{
+      estado = "CONFIABLE_CON_ADVERTENCIAS"
+      label = "Confiable con advertencias"
+      tone = "amarillo"
+      lectura = "La app sirve para gestion, pero hay excepciones que deben quedar visibles antes de directorio o cierre."
+    }
+  }
+  [pscustomobject]@{
+    estado = "CONFIABLE"
+    label = "Confiable para gestion diaria"
+    tone = "verde"
+    lectura = "No se detectan bloqueos mayores con la data disponible; mantener criterio de que contabilidad oficial requiere respaldo CAZ."
+  }
+}
+
+function Get-FinanceSolutionSteps {
+  param([object]$Issue)
+  switch -Wildcard ([string]$Issue.code) {
+    "F-AUTO*" {
+      return @(
+        "Abrir Finanzas > Automatizaciones y revisar la tarjeta de la fuente indicada.",
+        "Confirmar si fallo el job automatico, si esta atrasado o si corrio sin novedades.",
+        "Si fallo BaseAPI/Clay, reintentar sincronizacion supervisada y dejar evidencia del resultado.",
+        "Usar carga manual solo como respaldo historico/correccion, no como solucion normal."
+      )
+    }
+    "F-CONF*" {
+      return @(
+        "Abrir Automatizaciones y Bancos.",
+        "Confirmar ultimo saldo Clay/BICE y fecha de actualizacion.",
+        "Bloquear decisiones de pago basadas en Caja hoy hasta recuperar saldo reciente.",
+        "Escalar a Felix si el saldo automatico no aparece o difiere materialmente."
+      )
+    }
+    "F-B01" {
+      return @(
+        "Abrir Finanzas > Bancos y filtrar cargos sin destino.",
+        "Clasificar cada salida como proveedor, remuneracion, impuesto, comision, prestamo, proyecto/OPEX o transferencia.",
+        "Vincular factura/pago cuando exista; si no existe factura, usar link operacional con nota y respaldo requerido.",
+        "Crear regla aprobable si el patron se repite."
+      )
+    }
+    "F-B02" {
+      return @(
+        "Abrir Finanzas > Bancos y filtrar abonos sin destino.",
+        "Separar cobranza cliente, aporte/prestamo, vale vista/rechazo, reembolso o transferencia interna.",
+        "Vincular cobranza a CxC si corresponde.",
+        "Dejar nota operacional y contraparte cuando no exista factura asociada."
+      )
+    }
+    "F-B03" {
+      return @(
+        "Abrir Automatizaciones > Resolver respaldos pendientes.",
+        "Separar respaldo bloqueado, respaldo pendiente y excepcion historica.",
+        "Completar factura, NC, rendicion, evidencia SII/BaseAPI, OC/guia o criterio contable.",
+        "Mantener fuera de cierre contable hasta que respaldoEstado quede RESUELTO."
+      )
+    }
+    "F-CXP01" {
+      return @(
+        "Abrir Cuentas por pagar y buscar proveedor/folio.",
+        "Verificar si ya fue pagada en banco; si fue pagada, vincular pago.",
+        "Si sigue impaga, definir fecha de pago o renegociacion.",
+        "Escalar a Felix si afecta caja semanal o proveedor critico."
+      )
+    }
+    "F-CXP02" {
+      return @(
+        "Abrir Cuentas por pagar y ordenar vencidas por monto/criticidad.",
+        "Resolver primero proveedores operacionales, arriendo, impuestos y servicios criticos.",
+        "Vincular pagos ya hechos desde banco antes de programar nuevos pagos.",
+        "Dejar lista priorizada de pagos para Felix/Valentina."
+      )
+    }
+    "F-CXP03" {
+      return @(
+        "Abrir Cuentas por pagar y filtrar AP sin proyecto/destino.",
+        "Vincular contra OC MAYU/Materiales si existe.",
+        "Si no corresponde a proyecto, clasificar como OPEX, impuesto, financiero, stock/control especial u otro.",
+        "Crear regla por proveedor solo si el criterio queda aprobado."
+      )
+    }
+    "F-CXP04" {
+      return @(
+        "Filtrar AP en SIN_CLASIFICAR.",
+        "Completar linea de negocio, categoria contable, proyecto/OPEX y cuenta.",
+        "Priorizar facturas de mayor monto y las que afecten proyectos activos.",
+        "Convertir criterios repetibles en reglas aprobables para futuros RCV."
+      )
+    }
+    "F-CXP05" {
+      return @(
+        "Filtrar AP sin cuenta contable.",
+        "Asignar cuenta CAZ desde plan de cuentas.",
+        "Crear regla por proveedor/partida cuando sea recurrente.",
+        "No usar EERR formal como conciliable hasta cerrar estas cuentas."
+      )
+    }
+    "F-DTE*" {
+      return @(
+        "Filtrar AP con validacion tributaria pendiente.",
+        "Confirmar si falta RCV/DTE por bloqueo BaseAPI, documento proveedor o carga transitoria.",
+        "Buscar respaldo en DTE recibido, estado de cuenta, OC/guia o evidencia autorizada.",
+        "Mantener como gestion, no cierre contable, hasta resolver evidencia."
+      )
+    }
+    "F-BHE*" {
+      return @(
+        "Abrir Automatizaciones > Honorarios SII/BaseAPI.",
+        "Revisar BHE pendientes y sugerencias de match.",
+        "Aprobar solo si calzan folio BH/BHE, prestador y monto liquido.",
+        "Evitar registrar la BHE como AP duplicada."
+      )
+    }
+    "F-CXC*" {
+      return @(
+        "Abrir Cuentas por cobrar y buscar cliente/folio.",
+        "Vincular cobranza bancaria si ya entro el pago.",
+        "Si sigue pendiente, coordinar cobranza con Comercial.",
+        "Completar proyecto/CRM para que directorio y pipeline no queden distorsionados."
+      )
+    }
+    "F-OC01" {
+      return @(
+        "Revisar ciclo OC: mat_oc_headers, lineas OC, recepcion Bodega, factura RCV y pago banco.",
+        "Separar OC emitida/enviada de OC recibida o facturada.",
+        "Priorizar OCs con recepcion o factura porque ya afectan caja real.",
+        "Usar el monto como compromiso futuro, no como deuda vencida."
+      )
+    }
+    default {
+      return @(
+        "Abrir la vista indicada en Finanzas.",
+        "Completar el dato faltante o dejar evidencia de por que no aplica.",
+        "Escalar a Felix/Valentina si cambia caja, margen, deuda, EERR o cierre."
+      )
+    }
+  }
+}
+
+function Add-FinanceSolutionPlans {
+  param([object[]]$Issues)
+  foreach ($issue in @($Issues)) {
+    if ($null -eq $issue) { continue }
+    $steps = @(Get-FinanceSolutionSteps -Issue $issue)
+    $issue | Add-Member -NotePropertyName solutionTitle -NotePropertyValue "Ruta de solucion" -Force
+    $issue | Add-Member -NotePropertyName solutionSteps -NotePropertyValue $steps -Force
+  }
+  @($Issues)
+}
+
+function Build-FinanzasReport {
+  param([object]$Config, [object]$Data, [datetime]$Now)
+  $issues = @(Add-FinanceSolutionPlans -Issues @(Get-FinanceIssues -Config $Config -Data $Data -Now $Now))
+  $confidence = Get-FinanzasConfidence -Issues $issues
+  [pscustomobject]@{
+    generatedAt = $Now.ToString("o")
+    date = $Now.ToString("yyyy-MM-dd")
+    mandate = "Fiscalizar si Finanzas esta al dia y si los numeros visibles son confiables para gestion, pagos, directorio y cierre."
+    confidence = $confidence
+    summary = [pscustomobject]@{
+      confianza = $confidence.label
+      rojas = @($issues | Where-Object { $_.severity -eq "rojo" }).Count
+      amarillas = @($issues | Where-Object { $_.severity -eq "amarillo" }).Count
+      informativas = @($issues | Where-Object { $_.severity -eq "info" }).Count
+      total = @($issues).Count
+      fuentes = [pscustomobject]@{
+        bancoMovimientos = @($Data.fin_mov_bancarios).Count
+        facturasAp = @($Data.fin_facturas_ap).Count
+        facturasAr = @($Data.fin_facturas_ar).Count
+        boletasHonorarios = @($Data.fin_boletas_honorarios).Count
+        ocHeaders = @($Data.mat_oc_headers).Count
+      }
+    }
+    issues = $issues
+  }
+}
+
+function Render-FinanzasHtml {
+  param([object]$Report)
+  return Render-FinanzasHtmlV2 -Report $Report
+  $s = $Report.summary
+  $principales = Render-IssueList -Items @($Report.issues | Where-Object { $_.severity -in @("rojo", "amarillo") } | Select-Object -First 80)
+  $infos = Render-IssueList -Items @($Report.issues | Where-Object { $_.severity -eq "info" } | Select-Object -First 20)
+  @"
+<html>
+<body style="font-family:Arial,sans-serif;color:#222;max-width:980px;font-size:14px;">
+  <h2 style="margin-bottom:4px;">Agente Finanzas MAYU - $($Report.date)</h2>
+  <p style="margin-top:0;color:#555;">Rojas: <strong style="color:#991b1b;">$($s.rojas)</strong> · Amarillas: <strong style="color:#9a3412;">$($s.amarillas)</strong> · Informativas: <strong>$($s.informativas)</strong></p>
+
+  <h3>Alertas accionables</h3>
+  $principales
+
+  <h3>Contexto</h3>
+  $infos
+
+  <h3>Como pedir ayuda</h3>
+  <p>Responde este correo con el codigo o el titulo de una alerta. Ejemplos:</p>
+  <ul>
+    <li>como resuelvo F-D02</li>
+    <li>explicame Cargos bancarios sin conciliar</li>
+    <li>que hago con CxP vencida</li>
+  </ul>
+  <p style="font-size:12px;color:#777;">El respondedor explica pasos manuales en Finanzas y no modifica datos desde correo.</p>
+</body>
+</html>
+"@
+}
+
+function Get-FinanzasGuidance {
+  param([string]$Question, [object[]]$Issues)
+  $q = ([string]$Question).ToLowerInvariant()
+  $match = @($Issues | Where-Object {
+    ($_.code -and $q.Contains(([string]$_.code).ToLowerInvariant())) -or
+    ($_.title -and $q.Contains(([string]$_.title).ToLowerInvariant())) -or
+    ($_.ref -and $q.Contains(([string]$_.ref).ToLowerInvariant()))
+  } | Select-Object -First 1)
+  if ($match.Count -eq 0) {
+    if ($q -match "automatiz|cartola|rcv|libro|fuente|desactual|baseapi|clay") {
+      $match = @($Issues | Where-Object { $_.code -like "F-AUTO*" -or $_.code -eq "F-CONF01" } | Select-Object -First 1)
+    } elseif ($q -match "respaldo|documentacion|documento") {
+      $match = @($Issues | Where-Object { $_.code -eq "F-B03" -or $_.code -eq "F-DTE01" } | Select-Object -First 1)
+    } elseif ($q -match "honorario|boleta|bhe|bh") {
+      $match = @($Issues | Where-Object { $_.code -eq "F-BHE01" } | Select-Object -First 1)
+    } elseif ($q -match "cargo|banco|concili") {
+      $match = @($Issues | Where-Object { $_.code -eq "F-B01" } | Select-Object -First 1)
+    } elseif ($q -match "abono") {
+      $match = @($Issues | Where-Object { $_.code -eq "F-B02" } | Select-Object -First 1)
+    } elseif ($q -match "cxp|pagar|proveedor|vencida") {
+      $match = @($Issues | Where-Object { $_.code -like "F-CXP*" } | Select-Object -First 1)
+    } elseif ($q -match "cxc|cobrar|cobranza|cliente") {
+      $match = @($Issues | Where-Object { $_.code -like "F-CXC*" } | Select-Object -First 1)
+    } elseif ($q -match "oc|orden") {
+      $match = @($Issues | Where-Object { $_.code -eq "F-OC01" } | Select-Object -First 1)
+    }
+  }
+
+  if ($match.Count -eq 0) {
+    return @"
+No encontre una alerta financiera especifica en tu pregunta.
+
+Puedes responder con el codigo o titulo exacto de la alerta, por ejemplo:
+- como resuelvo F-AUTO03
+- explicame Cargos bancarios sin conciliar
+- que hago con CxP vencida
+
+Regla general: el agente fiscaliza confiabilidad y entrega pasos manuales en Finanzas. No modifica datos desde el correo.
+"@
+  }
+
+  $issue = $match[0]
+  $steps = switch -Wildcard ([string]$issue.code) {
+    "F-AUTO*" {
+      @(
+        "Entrar a Finanzas > Automatizaciones.",
+        "Revisar la tarjeta de la fuente indicada: RCV/BaseAPI, Banco BICE/Clay u Honorarios/BaseAPI.",
+        "Si el job fallo, reintentar la sincronizacion supervisada o revisar credenciales/proveedor.",
+        "Si la fuente esta al dia pero sin novedades, dejarlo como evidencia; no recurrir a carga manual salvo correccion historica."
+      )
+    }
+    "F-CONF*" {
+      @(
+        "Entrar a Finanzas > Automatizaciones y luego a Bancos.",
+        "Confirmar ultimo saldo Clay/BICE y fecha de actualizacion.",
+        "No tomar decisiones de pago con Caja hoy hasta que exista snapshot bancario reciente.",
+        "Si hay bloqueo de fuente, dejar el reporte como no confiable para cierre/directorio."
+      )
+    }
+    "F-B01" {
+      @(
+        "Entrar a Finanzas > Bancos o Conciliacion.",
+        "Filtrar cargos no conciliados.",
+        "Para cada salida, decidir si corresponde a pago proveedor, remuneracion, impuesto, prestamo, comision, combustible, OPEX, proyecto o inventario.",
+        "Si existe factura, vincularla al pago. Si no hay factura pero el movimiento es real, usar conciliacion operacional con nota clara.",
+        "Escalar a Felix si afecta deuda real, prestamo de socios, proyecto o criterio gerencial."
+      )
+    }
+    "F-B02" {
+      @(
+        "Entrar a Finanzas > Bancos o Conciliacion.",
+        "Filtrar abonos no conciliados.",
+        "Separar cobros de clientes, aportes de capital, prestamos de socios, vale vista/rechazos y reembolsos.",
+        "Si corresponde a factura de venta, vincular la cobranza a la CxC.",
+        "Si es aporte/prestamo/reembolso, conciliar operacionalmente con nota y contraparte."
+      )
+    }
+    "F-B03" {
+      @(
+        "Entrar a Finanzas > Automatizaciones.",
+        "Abrir Resolver respaldos pendientes.",
+        "Separar movimientos con respaldo bloqueado, respaldo pendiente y excepcion historica.",
+        "Completar factura, nota de credito, rendicion, evidencia SII/BaseAPI o criterio contable.",
+        "No tratar estos movimientos como cierre contable aunque el banco ya este explicado operacionalmente."
+      )
+    }
+    "F-CXP*" {
+      @(
+        "Entrar a Finanzas > Cuentas por pagar.",
+        "Abrir la factura indicada o filtrar por proveedor/folio.",
+        "Si ya fue pagada, registrar o vincular el pago bancario.",
+        "Si no fue pagada, decidir fecha de pago o renegociacion.",
+        "Si aparece sin proyecto o sin clasificacion, completar linea, cuenta y proyecto; usar OPEX solo si no corresponde a costo directo ni inventario."
+      )
+    }
+    "F-DTE*" {
+      @(
+        "Entrar a Finanzas > Cuentas por pagar o Automatizaciones.",
+        "Filtrar documentos con validacion tributaria pendiente.",
+        "Confirmar si son respaldo operativo transitorio, DTE recibido pendiente o bloqueo BaseAPI/SII.",
+        "Mantenerlos como gestion, no como cierre contable, hasta tener RCV/DTE o aprobacion explicita."
+      )
+    }
+    "F-BHE*" {
+      @(
+        "Entrar a Finanzas > Automatizaciones.",
+        "Revisar Honorarios SII / BaseAPI.",
+        "Aprobar solo matches seguros por folio BH/BHE, prestador y monto liquido.",
+        "Evitar duplicar la BHE como factura AP normal."
+      )
+    }
+    "F-CXC*" {
+      @(
+        "Entrar a Finanzas > Cuentas por cobrar.",
+        "Abrir la factura indicada o filtrar por cliente/folio.",
+        "Si ya entro el abono, vincular la cobranza al movimiento bancario.",
+        "Si sigue pendiente, gestionar cobranza con Comercial.",
+        "Completar proyecto/CRM si falta, porque si no el reporte comercial y directorio queda incompleto."
+      )
+    }
+    "F-OC01" {
+      @(
+        "Revisar el ciclo OC en Finanzas y Materiales.",
+        "Distinguir OC emitida/enviada, recepcion Bodega, factura RCV y pago banco.",
+        "No tratarlo como deuda vencida: es compromiso potencial de caja.",
+        "Priorizar OCs con recepcion o factura, porque ahi el compromiso ya esta mas cerca de caja real."
+      )
+    }
+    default {
+      @(
+        "Revisar el registro indicado en Finanzas.",
+        "Completar el campo que falta: proyecto, linea, cuenta, pago, cobranza o nota operacional.",
+        "Escalar a Felix si cambia la lectura gerencial de caja, deuda, margen o EERR."
+      )
+    }
+  }
+
+  $stepsText = ($steps | ForEach-Object { "- $_" }) -join "`n"
+  @"
+Alerta: $($issue.code) - $($issue.title)
+Severidad: $($issue.severity)
+Responsable: $($issue.owner)
+
+Que significa:
+$($issue.detail)
+
+Que hacer:
+$stepsText
+
+Criterio:
+$($issue.action)
+
+Referencia:
+$($issue.ref)
+"@
+}
+
+function Invoke-Finanzas {
+  param([object]$Config, [string]$GraphToken, [string]$SiteId, [datetime]$Now, [bool]$DoSendEmail)
+  Write-Output "Finanzas: leyendo Firestore."
+  $data = Get-FirestoreData -Config $Config
+  $report = Build-FinanzasReport -Config $Config -Data $data -Now $Now
+  Write-Output "Finanzas: confiabilidad=$($report.confidence.estado) rojas=$($report.summary.rojas) amarillas=$($report.summary.amarillas) informativas=$($report.summary.informativas) total=$($report.summary.total)."
+  foreach ($issue in @($report.issues | Select-Object -First 30)) {
+    Write-Output "Finanzas alerta: [$($issue.severity)] $($issue.code) $($issue.title) | $($issue.detail) | $($issue.action)"
+  }
+  $html = Render-FinanzasHtmlV2 -Report $report
+  $dateKey = $report.date
+  Ensure-GraphFolder -Token $GraphToken -SiteId $SiteId -FolderPath $Config.sharepoint.finanzas_folder
+  Write-TextFileToGraph -Token $GraphToken -SiteId $SiteId -FilePath "$($Config.sharepoint.finanzas_folder)/$dateKey.json" -Text ($report | ConvertTo-Json -Depth 80) -ContentType "application/json; charset=utf-8"
+  Write-TextFileToGraph -Token $GraphToken -SiteId $SiteId -FilePath "$($Config.sharepoint.finanzas_folder)/$dateKey.html" -Text $html -ContentType "text/html; charset=utf-8"
+  if ($DoSendEmail) {
+    $to = @($Config.mail.felix, $Config.mail.valentina)
+    $subject = "[Finanzas] Confiabilidad $dateKey - $($report.confidence.label) - R$($report.summary.rojas) A$($report.summary.amarillas)"
+    Send-GraphMail -Token $GraphToken -Sender $Config.mail.sender -To $to -Cc @() -Subject $subject -HtmlBody $html
+    Write-Output "Finanzas: correo enviado."
+  } else {
+    Write-Output "Finanzas: SendEmail=false, no se envia correo."
+  }
+  Write-Output "Finanzas: outputs guardados en SharePoint."
+}
+
+function Invoke-FinanzasRespuestas {
+  param([object]$Config, [string]$GraphToken, [string]$SiteId, [datetime]$Now)
+  Write-Output "Finanzas respuestas: leyendo correos no leidos."
+  $messages = @(Get-GraphUnreadInboxMessages -Token $GraphToken -Sender $Config.mail.sender -Top 30 | Where-Object {
+    $subject = [string]$_.subject
+    $from = [string]$_.from.emailAddress.address
+    ($subject -match "\[Finanzas\]|Finanzas|F-AUTO|F-CONF|F-DTE|F-BHE|F-B0|F-CXP|F-CXC|Cargos bancarios|CxP|CxC|respaldo|confiabilidad") -and
+    ($from -ne [string]$Config.mail.sender)
+  })
+  if ($messages.Count -eq 0) {
+    Write-Output "Finanzas respuestas: sin correos pendientes."
+    return
+  }
+  $data = Get-FirestoreData -Config $Config
+  $report = Build-FinanzasReport -Config $Config -Data $data -Now $Now
+  foreach ($msg in $messages) {
+    $question = "$($msg.subject)`n$($msg.bodyPreview)"
+    $answer = Get-FinanzasGuidance -Question $question -Issues @($report.issues)
+    $comment = @"
+Hola,
+
+$answer
+
+Este respondedor no cambia datos automaticamente. Solo orienta la correccion manual en la app Finanzas.
+"@
+    Send-GraphReply -Token $GraphToken -Sender $Config.mail.sender -MessageId ([string]$msg.id) -Comment $comment
+    Set-GraphMessageRead -Token $GraphToken -Sender $Config.mail.sender -MessageId ([string]$msg.id)
+    Write-Output "Finanzas respuestas: respondido mensaje $($msg.id) / $($msg.subject)."
+  }
 }
 
 function Get-CalidadIssues {
@@ -1451,9 +2199,15 @@ function Render-IssueList {
   $html = "<table style='border-collapse:collapse;width:100%;font-size:13px;'><tr><th style='text-align:left;border:1px solid #ddd;padding:6px;'>Sev</th><th style='text-align:left;border:1px solid #ddd;padding:6px;'>Tema</th><th style='text-align:left;border:1px solid #ddd;padding:6px;'>Accion</th><th style='text-align:left;border:1px solid #ddd;padding:6px;'>Resp.</th></tr>"
   foreach ($it in @($Items)) {
     $color = if ($it.severity -eq "rojo") { "#991b1b" } elseif ($it.severity -eq "amarillo") { "#9a3412" } else { "#2563eb" }
+    $codeText = ""
+    if ($it.PSObject.Properties["code"] -and -not [string]::IsNullOrWhiteSpace([string]$it.code)) {
+      $codeText = "$($it.code) - "
+    } elseif ($it.PSObject.Properties["checkId"] -and -not [string]::IsNullOrWhiteSpace([string]$it.checkId)) {
+      $codeText = "$($it.checkId) - "
+    }
     $html += "<tr>"
     $html += "<td style='border:1px solid #ddd;padding:6px;color:$color;font-weight:bold;'>$(HtmlEscape $it.severity)</td>"
-    $html += "<td style='border:1px solid #ddd;padding:6px;'><strong>$(HtmlEscape $it.title)</strong><br><span style='color:#555;'>$(HtmlEscape $it.detail)</span><br><span style='font-size:12px;color:#777;'>$(HtmlEscape $it.ref)</span></td>"
+    $html += "<td style='border:1px solid #ddd;padding:6px;'><strong>$(HtmlEscape ($codeText + $it.title))</strong><br><span style='color:#555;'>$(HtmlEscape $it.detail)</span><br><span style='font-size:12px;color:#777;'>$(HtmlEscape $it.ref)</span></td>"
     $html += "<td style='border:1px solid #ddd;padding:6px;'>$(HtmlEscape $it.action)</td>"
     $html += "<td style='border:1px solid #ddd;padding:6px;'>$(HtmlEscape $it.owner)</td>"
     $html += "</tr>"
@@ -1462,8 +2216,133 @@ function Render-IssueList {
   $html
 }
 
+function Render-IssueListCards {
+  param([object[]]$Items)
+  if (@($Items).Count -eq 0) { return (New-MayuEmptyState -Text "Sin alertas relevantes.") }
+  $html = ""
+  foreach ($it in @($Items)) {
+    $rawTone = if ($it.PSObject.Properties["level"]) { [string]$it.level } else { [string]$it.severity }
+    $tone = Get-MayuEmailTone -Tone $rawTone
+    $codeText = ""
+    if ($it.PSObject.Properties["code"] -and -not [string]::IsNullOrWhiteSpace([string]$it.code)) {
+      $codeText = "$($it.code) - "
+    } elseif ($it.PSObject.Properties["checkId"] -and -not [string]::IsNullOrWhiteSpace([string]$it.checkId)) {
+      $codeText = "$($it.checkId) - "
+    }
+    $solutionHtml = ""
+    if ($it.PSObject.Properties["solutionSteps"] -and @($it.solutionSteps).Count -gt 0) {
+      $solutionItems = (@($it.solutionSteps) | ForEach-Object {
+        "<li style='margin:0 0 4px 0;'>$(HtmlEscape $_)</li>"
+      }) -join "`n"
+      $solutionHtml = @"
+  <div style="background:#fffdf7;border:1px solid #f3e4bd;padding:8px 10px;color:#30343b;margin-top:8px;">
+    <strong>Ruta de solucion:</strong>
+    <ol style="margin:6px 0 0 18px;padding:0;">$solutionItems</ol>
+  </div>
+"@
+    }
+    $html += @"
+<div style="border:1px solid #e5e7eb;border-left:4px solid $($tone.accent);background:#ffffff;padding:12px 14px;margin:0 0 10px 0;">
+  <div style="margin-bottom:6px;">
+    <span style="display:inline-block;background:$($tone.soft);border:1px solid $($tone.accent);color:#202124;font-size:11px;line-height:1;text-transform:uppercase;letter-spacing:.3px;padding:5px 7px;">$(HtmlEscape $rawTone)</span>
+    <span style="color:#6b7280;font-size:12px;margin-left:6px;">$(HtmlEscape $it.area)</span>
+  </div>
+  <div style="font-weight:700;color:#202124;margin-bottom:4px;">$(HtmlEscape ($codeText + $it.title))</div>
+  <div style="color:#4b5563;margin-bottom:8px;">$(HtmlEscape $it.detail)</div>
+  <div style="background:#f8fafc;border:1px solid #edf2f7;padding:8px 10px;color:#30343b;"><strong>Accion:</strong> $(HtmlEscape $it.action)</div>
+$solutionHtml
+  <div style="font-size:12px;color:#6b7280;margin-top:7px;"><strong>Responsable:</strong> $(HtmlEscape $it.owner) &nbsp; <strong>Ref:</strong> $(HtmlEscape $it.ref)</div>
+</div>
+"@
+  }
+  $html
+}
+
+function Render-BodegaMaterialesHtmlV2 {
+  param([object]$Report)
+  $s = $Report.summary
+  $metrics = @(
+    New-MayuEmailMetric -Label "Criticas" -Value $s.criticas -Tone "critico"
+    New-MayuEmailMetric -Label "Altas" -Value $s.altas -Tone "alto"
+    New-MayuEmailMetric -Label "Medias" -Value $s.medias -Tone "medio"
+    New-MayuEmailMetric -Label "Bajas" -Value $s.bajas -Tone "bajo"
+  ) -join ""
+  $content = @"
+<table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;margin:0 0 12px 0;"><tr>$metrics</tr></table>
+<div style="background:#f4f7fb;border-left:4px solid #0078d4;padding:12px 14px;color:#30343b;margin:12px 0 18px 0;">
+  Puedes responder este correo con preguntas como <strong>"como resuelvo B-D06"</strong>, <strong>"explicame B-A05"</strong> o copiando una alerta. El agente respondera solo con explicacion operativa y pasos manuales en las apps.
+</div>
+$(New-MayuEmailSection -Title "Alertas" -Html (Render-IssueListCards -Items @($Report.issues | Select-Object -First 80)))
+"@
+  New-MayuEmailLayout -Title "Agente Bodega + Materiales - $($Report.date)" -Subtitle "Trazabilidad, catalogo, compras, recepciones y entregas a fabrica." -ContentHtml $content -Footer "Destinatarios productivos esperados: Felix, Valentina, Carlos y Mauricio. El envio queda controlado por SendEmail."
+}
+
+function Render-FinanzasHtmlV2 {
+  param([object]$Report)
+  $s = $Report.summary
+  $confidence = $Report.confidence
+  $metrics = @(
+    New-MayuEmailMetric -Label "Confiabilidad" -Value $confidence.label -Tone $confidence.tone
+    New-MayuEmailMetric -Label "Rojas" -Value $s.rojas -Tone "rojo"
+    New-MayuEmailMetric -Label "Amarillas" -Value $s.amarillas -Tone "amarillo"
+    New-MayuEmailMetric -Label "Informativas" -Value $s.informativas -Tone "info"
+  ) -join ""
+  $actionable = Render-IssueListCards -Items @($Report.issues | Where-Object { $_.severity -in @("rojo", "amarillo") })
+  $context = Render-IssueListCards -Items @($Report.issues | Where-Object { $_.severity -eq "info" })
+  $content = @"
+<table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;margin:0 0 12px 0;"><tr>$metrics</tr></table>
+<div style="background:#f8fafc;border-left:4px solid #475569;padding:12px 14px;color:#30343b;margin:12px 0 18px 0;">
+  <strong>Lectura:</strong> $(HtmlEscape $confidence.lectura)<br>
+  <span style="color:#5f6368;">Mandato: fiscalizar si Finanzas esta al dia y si los numeros visibles son confiables para gestion, pagos, directorio y cierre.</span>
+</div>
+$(New-MayuEmailSection -Title "Alertas accionables" -Html $actionable)
+$(New-MayuEmailSection -Title "Contexto gerencial" -Html $context)
+<div style="background:#f4f7fb;border-left:4px solid #0078d4;padding:12px 14px;color:#30343b;margin-top:22px;">
+  Responde este correo con el codigo de la alerta, por ejemplo <strong>F-AUTO03</strong>, <strong>F-B03</strong> o <strong>F-B01</strong>. El respondedor de Finanzas te dira que revisar en la app sin modificar datos.
+</div>
+"@
+  New-MayuEmailLayout -Title "Fiscalizador Finanzas MAYU - $($Report.date)" -Subtitle "Confiabilidad de fuentes, caja, respaldo, clasificacion, proyectos y ciclo OC." -ContentHtml $content -Footer "Este agente no corrige datos por correo. Fiscaliza si los numeros de Finanzas son confiables y que impide usarlos como cierre."
+}
+
+function Render-PulseHtmlV2 {
+  param([object]$Config, [object]$Pulse)
+  $s = $Pulse.summary
+  $links = $Config.sharepoint.links
+  $decisionHtml = if (@($Pulse.decisionesFelixHoy).Count -eq 0) {
+    New-MayuEmptyState -Text "No hay decisiones rojas detectadas con la data disponible."
+  } else {
+    $items = (@($Pulse.decisionesFelixHoy) | ForEach-Object {
+      "<li style='margin:0 0 8px 0;'><strong>$(HtmlEscape $_.owner):</strong> $(HtmlEscape $_.text)</li>"
+    }) -join "`n"
+    "<ol style='margin:0;padding-left:20px;'>$items</ol>"
+  }
+  $metrics = @(
+    New-MayuEmailMetric -Label "Rojos" -Value $s.rojos -Tone "rojo"
+    New-MayuEmailMetric -Label "Amarillos" -Value $s.amarillos -Tone "amarillo"
+    New-MayuEmailMetric -Label "Biblia roja" -Value $s.bibliaRoja -Tone "rojo"
+    New-MayuEmailMetric -Label "Biblia amarilla" -Value $s.bibliaAmarilla -Tone "amarillo"
+  ) -join ""
+  $apps = "Apps: <a href='$($links.control)' style='color:#0b57d0;'>Control</a> &middot; <a href='$($links.materiales)' style='color:#0b57d0;'>Materiales</a> &middot; <a href='$($links.bodega)' style='color:#0b57d0;'>Bodega</a> &middot; <a href='$($links.fabricacion)' style='color:#0b57d0;'>Fabricacion</a> &middot; <a href='$($links.finanzas)' style='color:#0b57d0;'>Finanzas</a> &middot; <a href='$($links.crm)' style='color:#0b57d0;'>CRM</a>"
+  $content = @"
+<table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;margin:0 0 12px 0;"><tr>$metrics</tr></table>
+$(New-MayuEmailSection -Title "Decisiones Felix hoy" -Html $decisionHtml)
+$(New-MayuEmailSection -Title "Riesgos rojos" -Html (Render-IssueListCards -Items @($Pulse.raw.allIssues | Where-Object { $_.severity -eq "rojo" } | Select-Object -First 12)))
+$(New-MayuEmailSection -Title "Amarillos" -Html (Render-IssueListCards -Items @($Pulse.raw.allIssues | Where-Object { $_.severity -eq "amarillo" } | Select-Object -First 12)))
+$(New-MayuEmailSection -Title "Biblia del Proyecto" -Html (Render-IssueListCards -Items @($Pulse.sections.bibliaProyecto)))
+$(New-MayuEmailSection -Title "Traspaso Control -> Operacion" -Html (Render-IssueListCards -Items @($Pulse.sections.traspasoControlOperacion)))
+$(New-MayuEmailSection -Title "Packs" -Html (Render-IssueListCards -Items @($Pulse.sections.packs)))
+$(New-MayuEmailSection -Title "Abastecimiento / Compras" -Html (Render-IssueListCards -Items @($Pulse.sections.abastecimiento)))
+$(New-MayuEmailSection -Title "Finanzas" -Html (Render-IssueListCards -Items @($Pulse.sections.finanzas)))
+$(New-MayuEmailSection -Title "Comercial" -Html (Render-IssueListCards -Items @($Pulse.sections.comercial)))
+$(New-MayuEmailSection -Title "Calidad / RF / Despacho" -Html (Render-IssueListCards -Items @($Pulse.sections.calidadRfDespacho)))
+<p style="margin-top:24px;font-size:12px;color:#777;">$apps</p>
+"@
+  New-MayuEmailLayout -Title "Pulso gerencial MAYU - $($Pulse.date)" -Subtitle "Resumen ejecutivo diario desde ERP MAYU." -ContentHtml $content -Footer "Generado por MAYU Agents. Secciones parciales no inventan datos; solo reportan lo que existe en Firestore."
+}
+
 function Render-PulseHtml {
   param([object]$Config, [object]$Pulse)
+  return Render-PulseHtmlV2 -Config $Config -Pulse $Pulse
   $s = $Pulse.summary
   $links = $Config.sharepoint.links
   $decisionHtml = if (@($Pulse.decisionesFelixHoy).Count -eq 0) {
@@ -1578,7 +2457,7 @@ function Invoke-DailyPulse {
   $data = Get-FirestoreData -Config $Config
   Write-Output "Pulso: construyendo analisis."
   $pulse = Build-Pulse -Config $Config -Data $data -Now $Now
-  $html = Render-PulseHtml -Config $Config -Pulse $pulse
+  $html = Render-PulseHtmlV2 -Config $Config -Pulse $pulse
   $json = $pulse | ConvertTo-Json -Depth 80
   $dateKey = $pulse.date
   Ensure-GraphFolder -Token $GraphToken -SiteId $SiteId -FolderPath $Config.sharepoint.pulso_folder
@@ -1608,7 +2487,7 @@ Write-Output "MAYU Agents iniciado. Modo=$Mode Fecha=$($now.ToString("yyyy-MM-dd
 Ensure-GraphFolder -Token $graphToken -SiteId $siteId -FolderPath $config.sharepoint.base_folder
 
 if ($Mode -eq "test") {
-  $body = "<html><body><p>MAYU Agents operativo.</p><p>Hora MAYU: $($now.ToString("yyyy-MM-dd HH:mm"))</p></body></html>"
+  $body = New-MayuEmailLayout -Title "MAYU Agents operativo" -Subtitle "Prueba de correo del runtime operacional." -ContentHtml "<p>Hora MAYU: $($now.ToString("yyyy-MM-dd HH:mm"))</p>" -Footer "Generado por MAYU Agents."
   if ($SendEmail) {
     Send-GraphMail -Token $graphToken -Sender $config.mail.sender -To @($config.mail.felix) -Cc @() -Subject "Prueba MAYU Agents" -HtmlBody $body
     Write-Output "Prueba enviada a $($config.mail.felix)."
@@ -1623,4 +2502,8 @@ if ($Mode -eq "test") {
   Invoke-TraspasoControlOperacion -Config $config -GraphToken $graphToken -SiteId $siteId -Now $now
 } elseif ($Mode -eq "bodega_materiales") {
   Invoke-BodegaMateriales -Config $config -GraphToken $graphToken -SiteId $siteId -Now $now -DoSendEmail $SendEmail
+} elseif ($Mode -eq "finanzas") {
+  Invoke-Finanzas -Config $config -GraphToken $graphToken -SiteId $siteId -Now $now -DoSendEmail $SendEmail
+} elseif ($Mode -eq "finanzas_respuestas") {
+  Invoke-FinanzasRespuestas -Config $config -GraphToken $graphToken -SiteId $siteId -Now $now
 }

@@ -13,6 +13,8 @@ on:
           - biblia_proyecto
           - traspaso_control_operacion
           - bodega_materiales
+          - finanzas
+          - finanzas_respuestas
           - test
       date:
         description: "Fecha YYYY-MM-DD"
@@ -26,6 +28,10 @@ on:
   schedule:
     # Lunes a viernes 12:00 UTC (~08:00 Chile horario actual). Pulso gerencial diario.
     - cron: "0 12 * * 1-5"
+    # Lunes a viernes 12:30 UTC (~08:30 Chile). Agente Finanzas.
+    - cron: "30 12 * * 1-5"
+    # Lunes a viernes, horario laboral Chile aprox. Respuestas del agente Finanzas.
+    - cron: "5,20,35,50 12-22 * * 1-5"
 
 permissions:
   contents: read
@@ -60,7 +66,14 @@ jobs:
             $date = "${{ inputs.date }}"
             $sendEmail = "${{ inputs.send_email }}"
           } else {
-            $mode = "daily_pulse"
+            $schedule = "${{ github.event.schedule }}"
+            if ($schedule -eq "30 12 * * 1-5") {
+              $mode = "finanzas"
+            } elseif ($schedule -eq "5,20,35,50 12-22 * * 1-5") {
+              $mode = "finanzas_respuestas"
+            } else {
+              $mode = "daily_pulse"
+            }
             $date = ""
             $sendEmail = "true"
           }
