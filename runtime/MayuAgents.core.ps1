@@ -1920,6 +1920,10 @@ function ConvertFrom-BiceAttachmentBytesToText {
   if ($name.EndsWith(".xlsx") -or ([string]$ContentType).ToLowerInvariant().Contains("spreadsheetml")) {
     return ConvertFrom-XlsxBytesToText -Bytes $Bytes
   }
+  if ($name.EndsWith(".xls") -or ([string]$ContentType).ToLowerInvariant().Contains("vnd.ms-excel")) {
+    $legacyText = ConvertFrom-LegacyXlsBytesToText -Bytes $Bytes
+    if (-not [string]::IsNullOrWhiteSpace($legacyText)) { return $legacyText }
+  }
   $text = [System.Text.Encoding]::UTF8.GetString($Bytes)
   if ($text -match "\x00") {
     try { $text = [System.Text.Encoding]::Unicode.GetString($Bytes) } catch { }
@@ -1935,21 +1939,83 @@ function ConvertFrom-BiceAttachmentBytesToText {
   $text
 }
 
+function ConvertFrom-LegacyXlsBytesToText {
+  param([byte[]]$Bytes)
+  $tmpDir = if (-not [string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) { $env:RUNNER_TEMP } elseif (-not [string]::IsNullOrWhiteSpace($env:TEMP)) { $env:TEMP } else { [System.IO.Path]::GetTempPath() }
+  $inputPath = Join-Path $tmpDir ("bice-cartola-" + [guid]::NewGuid().ToString("N") + ".xls")
+  $scriptPath = Join-Path $tmpDir ("bice-xls-parser-" + [guid]::NewGuid().ToString("N") + ".py")
+  try {
+    [System.IO.File]::WriteAllBytes($inputPath, $Bytes)
+    $script = @'
+import sys
+from datetime import datetime
+
+import xlrd
+
+path = sys.argv[1]
+book = xlrd.open_workbook(path)
+for sheet in book.sheets():
+    for r in range(sheet.nrows):
+        values = []
+        for c in range(sheet.ncols):
+            cell = sheet.cell(r, c)
+            value = cell.value
+            if cell.ctype == xlrd.XL_CELL_DATE:
+                try:
+                    value = xlrd.xldate_as_datetime(value, book.datemode).strftime("%Y-%m-%d")
+                except Exception:
+                    value = str(value)
+            elif isinstance(value, float):
+                if value.is_integer():
+                    value = str(int(value))
+                else:
+                    value = str(value)
+            else:
+                value = str(value)
+            values.append(value.replace("\r", " ").replace("\n", " ").strip())
+        line = "\t".join(values).strip()
+        if line:
+            print(line)
+'@
+    [System.IO.File]::WriteAllText($scriptPath, $script, [System.Text.Encoding]::UTF8)
+    $output = & python $scriptPath $inputPath 2>$null
+    if ($LASTEXITCODE -eq 0 -and $output) { return ($output -join "`n") }
+    return ""
+  } catch {
+    return ""
+  } finally {
+    Remove-Item -LiteralPath $inputPath -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $scriptPath -Force -ErrorAction SilentlyContinue
+  }
+}
+
 function ConvertFrom-BiceCartolaText {
   param([string]$Text, [string]$SourceFile)
   $rows = @()
   $lines = @(([string]$Text -split "`r?`n") | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
   $lineNo = 0
+  $header = @{}
   foreach ($line in $lines) {
     $lineNo++
     $raw = ([string]$line).Trim()
+    $cols = @($raw -split "`t|;")
+    if ($cols.Count -ge 3 -and $raw -match "(?i)fecha" -and $raw -match "(?i)cargo|abono|haber|debe") {
+      $header = @{}
+      for ($i = 0; $i -lt $cols.Count; $i++) {
+        $label = ([string]$cols[$i]).ToLowerInvariant()
+        if ($label -match "fecha" -and -not $header.ContainsKey("fecha")) { $header["fecha"] = $i }
+        if ($label -match "descrip|detalle|glosa|movimiento" -and -not $header.ContainsKey("descripcion")) { $header["descripcion"] = $i }
+        if ($label -match "cargo|debe" -and -not $header.ContainsKey("cargo")) { $header["cargo"] = $i }
+        if ($label -match "abono|haber" -and -not $header.ContainsKey("abono")) { $header["abono"] = $i }
+      }
+      continue
+    }
     if ($raw -match "(?i)fecha.*(descripcion|detalle)|saldo anterior|saldo disponible|total") { continue }
     $date = ConvertTo-BiceIsoDate -Text $raw
     if ([string]::IsNullOrWhiteSpace($date)) { continue }
 
     $withoutDate = $raw -replace "(?<!\d)(20\d{2})[/-](\d{1,2})[/-](\d{1,2})(?!\d)", " "
     $withoutDate = $withoutDate -replace "(?<!\d)(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})(?!\d)", " "
-    $cols = @($raw -split "`t|;")
     $amounts = @()
     foreach ($match in [regex]::Matches($withoutDate, "-?\$?\s*\d{1,3}(?:[\.\s]\d{3})+(?:,\d{1,2})?|-?\$?\s*\d{4,}(?:,\d{1,2})?")) {
       $n = [Math]::Abs((ConvertFrom-ClpText -Text $match.Value))
@@ -1961,7 +2027,12 @@ function ConvertFrom-BiceCartolaText {
     $cargo = 0.0
     $abono = 0.0
     $direction = "DESCONOCIDO"
-    if ($cols.Count -ge 4) {
+    if ($header.Count -gt 0 -and $cols.Count -gt 1) {
+      if ($header.ContainsKey("cargo") -and $header["cargo"] -lt $cols.Count) { $cargo = [Math]::Abs((ConvertFrom-ClpText -Text $cols[$header["cargo"]])) }
+      if ($header.ContainsKey("abono") -and $header["abono"] -lt $cols.Count) { $abono = [Math]::Abs((ConvertFrom-ClpText -Text $cols[$header["abono"]])) }
+      if ($header.ContainsKey("descripcion") -and $header["descripcion"] -lt $cols.Count) { $withoutDate = [string]$cols[$header["descripcion"]] }
+    }
+    if ($cargo -eq 0 -and $abono -eq 0 -and $cols.Count -ge 4) {
       $tail = @()
       foreach ($c in @($cols | Select-Object -Last 4)) {
         $n = [Math]::Abs((ConvertFrom-ClpText -Text $c))

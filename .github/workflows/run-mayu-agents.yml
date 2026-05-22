@@ -92,6 +92,11 @@ jobs:
           "send_email=$sendEmail" >> $env:GITHUB_OUTPUT
           Write-Output "Modo resuelto: $mode / Fecha=$date / SendEmail=$sendEmail"
 
+      - name: Install BICE XLS parser dependency
+        if: steps.resolve.outputs.run_mode == 'bice_cartola_mail'
+        shell: bash
+        run: python -m pip install --user xlrd
+
       - name: Run MAYU agents
         shell: pwsh
         run: |
