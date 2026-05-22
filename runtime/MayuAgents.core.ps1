@@ -1,5 +1,5 @@
 param(
-  [ValidateSet("morning_reports", "daily_pulse", "bodega_materiales", "bodega_materiales_respuestas", "finanzas", "finanzas_respuestas", "test")]
+  [ValidateSet("morning_reports", "daily_pulse", "bodega_materiales", "bodega_materiales_respuestas", "finanzas", "finanzas_respuestas", "bice_cartola_mail", "test")]
   [string]$Mode = "daily_pulse",
   [string]$Date = "",
   [bool]$SendEmail = $true
@@ -103,6 +103,14 @@ function Write-TextFileToGraph {
   $uri = "https://graph.microsoft.com/v1.0/sites/$SiteId/drive/root:/$encoded" + ":/content"
   $bytes = [System.Text.Encoding]::UTF8.GetBytes($Text)
   Invoke-GraphPutBytes -Token $Token -Uri $uri -Bytes $bytes -ContentType $ContentType | Out-Null
+}
+
+function Write-BytesFileToGraph {
+  param([string]$Token, [string]$SiteId, [string]$FilePath, [byte[]]$Bytes, [string]$ContentType)
+  if ([string]::IsNullOrWhiteSpace($ContentType)) { $ContentType = "application/octet-stream" }
+  $encoded = ConvertTo-DrivePath $FilePath
+  $uri = "https://graph.microsoft.com/v1.0/sites/$SiteId/drive/root:/$encoded" + ":/content"
+  Invoke-GraphPutBytes -Token $Token -Uri $uri -Bytes $Bytes -ContentType $ContentType | Out-Null
 }
 
 function Read-TextFileFromGraph {
@@ -1779,6 +1787,383 @@ function Render-FinanzasHelpReplyHtml {
 "@
 }
 
+function ConvertTo-SafeFileName {
+  param([string]$Name)
+  $clean = ([string]$Name).Trim()
+  if ([string]::IsNullOrWhiteSpace($clean)) { $clean = "archivo" }
+  $clean = $clean -replace '[\\/:*?"<>|#%&{}$!@+`=]', "_"
+  $clean = $clean -replace "\s+", " "
+  if ($clean.Length -gt 120) { $clean = $clean.Substring(0, 120) }
+  $clean
+}
+
+function ConvertFrom-ClpText {
+  param([string]$Text)
+  $raw = ([string]$Text).Trim()
+  if ([string]::IsNullOrWhiteSpace($raw)) { return 0.0 }
+  $negative = $raw -match "^\s*-|\(\s*[\$0-9]"
+  $clean = $raw -replace "[^\d,.\-]", ""
+  $clean = $clean -replace "^-", ""
+  if ([string]::IsNullOrWhiteSpace($clean)) { return 0.0 }
+  $lastComma = $clean.LastIndexOf(",")
+  $lastDot = $clean.LastIndexOf(".")
+  if ($lastComma -ge 0 -and $lastDot -ge 0) {
+    if ($lastComma -gt $lastDot) {
+      $clean = ($clean -replace "\.", "")
+      $clean = ($clean -replace ",\d{1,2}$", "")
+    } else {
+      $clean = ($clean -replace ",", "")
+      $clean = ($clean -replace "\.\d{1,2}$", "")
+    }
+  } elseif ($lastComma -ge 0) {
+    $clean = ($clean -replace ",\d{1,2}$", "")
+    $clean = ($clean -replace ",", "")
+  } elseif ($lastDot -ge 0) {
+    $groups = @($clean -split "\.")
+    if ($groups.Count -gt 1 -and $groups[-1].Length -eq 3) {
+      $clean = $clean -replace "\.", ""
+    } else {
+      $clean = ($clean -replace "\.\d{1,2}$", "")
+      $clean = $clean -replace "\.", ""
+    }
+  }
+  if ([string]::IsNullOrWhiteSpace($clean)) { return 0.0 }
+  try {
+    $value = [double]$clean
+    if ($negative) { $value = -1 * $value }
+    return $value
+  } catch {
+    return 0.0
+  }
+}
+
+function ConvertTo-BiceIsoDate {
+  param([string]$Text)
+  $value = [string]$Text
+  $m = [regex]::Match($value, "(?<!\d)(?<y>20\d{2})[/-](?<m>\d{1,2})[/-](?<d>\d{1,2})(?!\d)")
+  if ($m.Success) {
+    return "{0:0000}-{1:00}-{2:00}" -f [int]$m.Groups["y"].Value, [int]$m.Groups["m"].Value, [int]$m.Groups["d"].Value
+  }
+  $m = [regex]::Match($value, "(?<!\d)(?<d>\d{1,2})[/-](?<m>\d{1,2})[/-](?<y>\d{2,4})(?!\d)")
+  if ($m.Success) {
+    $year = [int]$m.Groups["y"].Value
+    if ($year -lt 100) { $year += 2000 }
+    return "{0:0000}-{1:00}-{2:00}" -f $year, [int]$m.Groups["m"].Value, [int]$m.Groups["d"].Value
+  }
+  ""
+}
+
+function ConvertFrom-XlsxBytesToText {
+  param([byte[]]$Bytes)
+  try {
+    Add-Type -AssemblyName System.IO.Compression -ErrorAction SilentlyContinue
+    $stream = [System.IO.MemoryStream]::new($Bytes)
+    $zip = [System.IO.Compression.ZipArchive]::new($stream, [System.IO.Compression.ZipArchiveMode]::Read)
+    $shared = @()
+    $sharedEntry = $zip.GetEntry("xl/sharedStrings.xml")
+    if ($sharedEntry) {
+      $reader = [System.IO.StreamReader]::new($sharedEntry.Open())
+      $sharedXml = $reader.ReadToEnd()
+      $reader.Dispose()
+      foreach ($si in [regex]::Matches($sharedXml, "<si\b[^>]*>(.*?)</si>", [System.Text.RegularExpressions.RegexOptions]::Singleline)) {
+        $parts = @()
+        foreach ($t in [regex]::Matches($si.Groups[1].Value, "<t\b[^>]*>(.*?)</t>", [System.Text.RegularExpressions.RegexOptions]::Singleline)) {
+          $parts += [System.Net.WebUtility]::HtmlDecode(($t.Groups[1].Value -replace "<[^>]+>", ""))
+        }
+        $shared += ($parts -join "")
+      }
+    }
+    $lines = @()
+    foreach ($entry in @($zip.Entries | Where-Object { $_.FullName -match "^xl/worksheets/sheet\d+\.xml$" } | Sort-Object FullName)) {
+      $reader = [System.IO.StreamReader]::new($entry.Open())
+      $sheetXml = $reader.ReadToEnd()
+      $reader.Dispose()
+      foreach ($row in [regex]::Matches($sheetXml, "<row\b[^>]*>(.*?)</row>", [System.Text.RegularExpressions.RegexOptions]::Singleline)) {
+        $cells = @()
+        foreach ($cell in [regex]::Matches($row.Groups[1].Value, "<c\b([^>]*)>(.*?)</c>", [System.Text.RegularExpressions.RegexOptions]::Singleline)) {
+          $attrs = $cell.Groups[1].Value
+          $body = $cell.Groups[2].Value
+          $value = ""
+          $vm = [regex]::Match($body, "<v>(.*?)</v>", [System.Text.RegularExpressions.RegexOptions]::Singleline)
+          if ($vm.Success) { $value = [System.Net.WebUtility]::HtmlDecode($vm.Groups[1].Value) }
+          if ($attrs -match 't="s"' -and $value -match "^\d+$") {
+            $idx = [int]$value
+            if ($idx -ge 0 -and $idx -lt $shared.Count) { $value = $shared[$idx] }
+          } elseif ($attrs -match 't="inlineStr"') {
+            $tm = [regex]::Match($body, "<t\b[^>]*>(.*?)</t>", [System.Text.RegularExpressions.RegexOptions]::Singleline)
+            if ($tm.Success) { $value = [System.Net.WebUtility]::HtmlDecode($tm.Groups[1].Value) }
+          }
+          $cells += $value
+        }
+        $line = ($cells -join "`t").Trim()
+        if ($line) { $lines += $line }
+      }
+    }
+    $zip.Dispose()
+    $stream.Dispose()
+    return ($lines -join "`n")
+  } catch {
+    return ""
+  }
+}
+
+function ConvertFrom-BiceAttachmentBytesToText {
+  param([byte[]]$Bytes, [string]$FileName, [string]$ContentType)
+  $name = ([string]$FileName).ToLowerInvariant()
+  if ($name.EndsWith(".xlsx") -or ([string]$ContentType).ToLowerInvariant().Contains("spreadsheetml")) {
+    return ConvertFrom-XlsxBytesToText -Bytes $Bytes
+  }
+  $text = [System.Text.Encoding]::UTF8.GetString($Bytes)
+  if ($text -match "\x00") {
+    try { $text = [System.Text.Encoding]::Unicode.GetString($Bytes) } catch { }
+  }
+  if ($name.EndsWith(".html") -or $name.EndsWith(".htm") -or ([string]$ContentType).ToLowerInvariant().Contains("html")) {
+    $text = $text -replace "(?i)</t[dh]>", "`t"
+    $text = $text -replace "(?i)</tr>", "`n"
+    $text = $text -replace "(?is)<script.*?</script>", " "
+    $text = $text -replace "(?is)<style.*?</style>", " "
+    $text = $text -replace "(?s)<[^>]+>", " "
+    $text = [System.Net.WebUtility]::HtmlDecode($text)
+  }
+  $text
+}
+
+function ConvertFrom-BiceCartolaText {
+  param([string]$Text, [string]$SourceFile)
+  $rows = @()
+  $lines = @(([string]$Text -split "`r?`n") | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+  $lineNo = 0
+  foreach ($line in $lines) {
+    $lineNo++
+    $raw = ([string]$line).Trim()
+    if ($raw -match "(?i)fecha.*(descripcion|detalle)|saldo anterior|saldo disponible|total") { continue }
+    $date = ConvertTo-BiceIsoDate -Text $raw
+    if ([string]::IsNullOrWhiteSpace($date)) { continue }
+
+    $withoutDate = $raw -replace "(?<!\d)(20\d{2})[/-](\d{1,2})[/-](\d{1,2})(?!\d)", " "
+    $withoutDate = $withoutDate -replace "(?<!\d)(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})(?!\d)", " "
+    $cols = @($raw -split "`t|;")
+    $amounts = @()
+    foreach ($match in [regex]::Matches($withoutDate, "-?\$?\s*\d{1,3}(?:[\.\s]\d{3})+(?:,\d{1,2})?|-?\$?\s*\d{4,}(?:,\d{1,2})?")) {
+      $n = [Math]::Abs((ConvertFrom-ClpText -Text $match.Value))
+      if ($n -ge 100 -and $n -lt 2000000000) { $amounts += $n }
+    }
+    $amounts = @($amounts | Select-Object -Unique)
+    if ($amounts.Count -eq 0) { continue }
+
+    $cargo = 0.0
+    $abono = 0.0
+    $direction = "DESCONOCIDO"
+    if ($cols.Count -ge 4) {
+      $tail = @()
+      foreach ($c in @($cols | Select-Object -Last 4)) {
+        $n = [Math]::Abs((ConvertFrom-ClpText -Text $c))
+        if ($n -gt 0) { $tail += $n } else { $tail += 0.0 }
+      }
+      if ($tail.Count -ge 2) {
+        $candidateCargo = [double]$tail[$tail.Count - 2]
+        $candidateAbono = [double]$tail[$tail.Count - 1]
+        if ($candidateCargo -gt 0 -or $candidateAbono -gt 0) {
+          $cargo = $candidateCargo
+          $abono = $candidateAbono
+        }
+      }
+    }
+    if ($cargo -eq 0 -and $abono -eq 0) {
+      $amount = [double]$amounts[-1]
+      if ($raw -match "(?i)\babono\b|deposito|deposito|transferencia recibida|haber|credito") {
+        $abono = $amount
+      } elseif ($raw -match "(?i)\bcargo\b|giro|pago|debito|comision|impuesto|transferencia a") {
+        $cargo = $amount
+      } else {
+        $cargo = 0.0
+        $abono = 0.0
+      }
+    }
+    if ($cargo -gt 0) { $direction = "CARGO" }
+    if ($abono -gt 0) { $direction = "ABONO" }
+    $rows += [pscustomobject]@{
+      fecha = $date
+      descripcion = ($withoutDate -replace "\s+", " ").Trim()
+      cargo = [Math]::Round($cargo, 0)
+      abono = [Math]::Round($abono, 0)
+      monto = if ($cargo -gt 0) { [Math]::Round($cargo, 0) } elseif ($abono -gt 0) { [Math]::Round($abono, 0) } else { [Math]::Round([double]$amounts[-1], 0) }
+      direccion = $direction
+      sourceFile = $SourceFile
+      lineNumber = $lineNo
+      raw = $raw
+    }
+  }
+  @($rows)
+}
+
+function Get-GraphMailboxMessages {
+  param([string]$Token, [string]$Mailbox, [int]$Top = 50)
+  $uri = "https://graph.microsoft.com/v1.0/users/$Mailbox/mailFolders/inbox/messages?`$top=$Top&`$orderby=receivedDateTime desc&`$select=id,subject,from,bodyPreview,isRead,receivedDateTime,hasAttachments"
+  @((Invoke-GraphGet -Token $Token -Uri $uri).value)
+}
+
+function Get-GraphMessageAttachments {
+  param([string]$Token, [string]$Mailbox, [string]$MessageId)
+  $uri = "https://graph.microsoft.com/v1.0/users/$Mailbox/messages/$MessageId/attachments?`$select=id,name,contentType,size,isInline,contentBytes"
+  @((Invoke-GraphGet -Token $Token -Uri $uri).value)
+}
+
+function Test-BiceCartolaMessage {
+  param([object]$Message)
+  $text = "$($Message.subject)`n$($Message.from.emailAddress.address)`n$($Message.bodyPreview)"
+  return ($text -match "(?i)bice|cartola|cuenta corriente|estado de cuenta|25-00114")
+}
+
+function Find-BiceExistingBankMatch {
+  param([object]$Row, [object[]]$BankRows)
+  $date = [string]$Row.fecha
+  $cargo = [Math]::Round((Get-Number $Row.cargo), 0)
+  $abono = [Math]::Round((Get-Number $Row.abono), 0)
+  $amount = [Math]::Round((Get-Number $Row.monto), 0)
+  foreach ($mov in @($BankRows | Where-Object { [string]$_.fecha -eq $date })) {
+    $movCargo = [Math]::Round((Get-Number $mov.cargo), 0)
+    $movAbono = [Math]::Round((Get-Number $mov.abono), 0)
+    if ($cargo -gt 0 -and $movCargo -eq $cargo) { return $mov }
+    if ($abono -gt 0 -and $movAbono -eq $abono) { return $mov }
+    if ($cargo -eq 0 -and $abono -eq 0 -and $amount -gt 0 -and ($movCargo -eq $amount -or $movAbono -eq $amount)) { return $mov }
+  }
+  $null
+}
+
+function Render-BiceCartolaMailHtml {
+  param([object]$Report)
+  $messageRows = (@($Report.messages) | ForEach-Object {
+    "<tr><td style='border:1px solid #ddd;padding:6px;'>$(HtmlEscape $_.receivedDateTime)</td><td style='border:1px solid #ddd;padding:6px;'>$(HtmlEscape $_.from)</td><td style='border:1px solid #ddd;padding:6px;'>$(HtmlEscape $_.subject)</td><td style='border:1px solid #ddd;padding:6px;text-align:right;'>$($_.attachments)</td></tr>"
+  }) -join ""
+  if (-not $messageRows) { $messageRows = "<tr><td colspan='4' style='border:1px solid #ddd;padding:8px;color:#666;'>No se encontraron correos BICE/cartola en la ventana revisada.</td></tr>" }
+  $candidateRows = (@($Report.candidates | Select-Object -First 80) | ForEach-Object {
+    "<tr><td style='border:1px solid #ddd;padding:6px;'>$(HtmlEscape $_.fecha)</td><td style='border:1px solid #ddd;padding:6px;'>$(HtmlEscape $_.direccion)</td><td style='border:1px solid #ddd;padding:6px;text-align:right;'>$(Format-Clp (Get-Number $_.monto))</td><td style='border:1px solid #ddd;padding:6px;'>$(HtmlEscape $_.estado)</td><td style='border:1px solid #ddd;padding:6px;'>$(HtmlEscape $_.descripcion)</td></tr>"
+  }) -join ""
+  if (-not $candidateRows) { $candidateRows = "<tr><td colspan='5' style='border:1px solid #ddd;padding:8px;color:#666;'>Sin filas legibles con fecha y monto.</td></tr>" }
+  $metrics = @(
+    New-MayuEmailMetric -Label "Correos" -Value $Report.summary.messagesFound -Tone "info"
+    New-MayuEmailMetric -Label "Adjuntos" -Value $Report.summary.attachmentsSaved -Tone "info"
+    New-MayuEmailMetric -Label "Filas leidas" -Value $Report.summary.rowsParsed -Tone "info"
+    New-MayuEmailMetric -Label "Nuevos probables" -Value $Report.summary.newCandidates -Tone "amarillo"
+    New-MayuEmailMetric -Label "Duplicados" -Value $Report.summary.duplicates -Tone "verde"
+  ) -join ""
+  $content = @"
+<table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin:0 0 10px 0;"><tr>$metrics</tr></table>
+<p style="margin:0 0 12px 0;color:#4b5563;">Modo espejo: este agente no escribe movimientos bancarios, no marca correos como leidos y no corta Clay. Solo guarda respaldo y compara contra Finanzas.</p>
+<h3 style="font-size:16px;margin:18px 0 8px 0;">Correos revisados</h3>
+<table style="border-collapse:collapse;width:100%;font-size:13px;"><tr><th style='border:1px solid #ddd;padding:6px;text-align:left;'>Recibido</th><th style='border:1px solid #ddd;padding:6px;text-align:left;'>De</th><th style='border:1px solid #ddd;padding:6px;text-align:left;'>Asunto</th><th style='border:1px solid #ddd;padding:6px;text-align:right;'>Adj.</th></tr>$messageRows</table>
+<h3 style="font-size:16px;margin:18px 0 8px 0;">Candidatos de cartola</h3>
+<table style="border-collapse:collapse;width:100%;font-size:13px;"><tr><th style='border:1px solid #ddd;padding:6px;text-align:left;'>Fecha</th><th style='border:1px solid #ddd;padding:6px;text-align:left;'>Tipo</th><th style='border:1px solid #ddd;padding:6px;text-align:right;'>Monto</th><th style='border:1px solid #ddd;padding:6px;text-align:left;'>Estado</th><th style='border:1px solid #ddd;padding:6px;text-align:left;'>Descripcion</th></tr>$candidateRows</table>
+"@
+  New-MayuEmailLayout -Title "BICE Cartola Mail" -Subtitle $Report.date -ContentHtml $content -Footer "Modo espejo BICE. No reemplaza Clay hasta validacion humana."
+}
+
+function Invoke-BiceCartolaMail {
+  param([object]$Config, [string]$GraphToken, [string]$SiteId, [datetime]$Now)
+  $mailbox = [string]$Config.mail.sender
+  $folder = [string]$Config.sharepoint.bice_cartolas_folder
+  if ([string]::IsNullOrWhiteSpace($folder)) { $folder = "$($Config.sharepoint.base_folder)/bice_cartolas" }
+  $dateKey = $Now.ToString("yyyy-MM-dd")
+  $runKey = $Now.ToString("yyyyMMdd-HHmmss")
+  Write-Output "BICE cartola mail: leyendo inbox de $mailbox en modo espejo."
+  Ensure-GraphFolder -Token $GraphToken -SiteId $SiteId -FolderPath $folder
+  Ensure-GraphFolder -Token $GraphToken -SiteId $SiteId -FolderPath "$folder/raw/$dateKey"
+
+  $messages = @(Get-GraphMailboxMessages -Token $GraphToken -Mailbox $mailbox -Top 50 | Where-Object { Test-BiceCartolaMessage -Message $_ } | Select-Object -First 10)
+  $data = Get-FirestoreData -Config $Config
+  $bankRows = @($data.fin_mov_bancarios)
+  $saved = @()
+  $parsedRows = @()
+  $messageSummary = @()
+
+  foreach ($msg in @($messages)) {
+    $attachments = @()
+    if ($msg.hasAttachments) {
+      $attachments = @(Get-GraphMessageAttachments -Token $GraphToken -Mailbox $mailbox -MessageId ([string]$msg.id) | Where-Object { -not $_.isInline })
+    }
+    $messageSummary += [pscustomobject]@{
+      id = [string]$msg.id
+      receivedDateTime = [string]$msg.receivedDateTime
+      from = [string]$msg.from.emailAddress.address
+      subject = [string]$msg.subject
+      attachments = @($attachments).Count
+      isRead = [bool]$msg.isRead
+    }
+    foreach ($att in @($attachments)) {
+      $name = ConvertTo-SafeFileName -Name ([string]$att.name)
+      $contentType = [string]$att.contentType
+      if ([string]::IsNullOrWhiteSpace([string]$att.contentBytes)) {
+        $saved += [pscustomobject]@{ name = $name; status = "SIN_CONTENT_BYTES"; size = [int64](Get-Number $att.size); contentType = $contentType; filePath = "" }
+        continue
+      }
+      $bytes = [Convert]::FromBase64String([string]$att.contentBytes)
+      $filePath = "$folder/raw/$dateKey/$runKey-$name"
+      Write-BytesFileToGraph -Token $GraphToken -SiteId $SiteId -FilePath $filePath -Bytes $bytes -ContentType $contentType
+      $text = ConvertFrom-BiceAttachmentBytesToText -Bytes $bytes -FileName $name -ContentType $contentType
+      $rows = @(ConvertFrom-BiceCartolaText -Text $text -SourceFile $name)
+      $parsedRows += $rows
+      $saved += [pscustomobject]@{
+        name = $name
+        status = if ($rows.Count -gt 0) { "PARSE_OK" } else { "SIN_FILAS_LEGIBLES" }
+        size = $bytes.Length
+        contentType = $contentType
+        filePath = $filePath
+        rowsParsed = $rows.Count
+      }
+    }
+  }
+
+  $candidates = @()
+  foreach ($row in @($parsedRows)) {
+    $match = Find-BiceExistingBankMatch -Row $row -BankRows $bankRows
+    $estado = if ($match) { "DUPLICADO_PROBABLE" } else { "NUEVO_PROBABLE" }
+    if ([string]$row.direccion -eq "DESCONOCIDO") { $estado = "REVISION_DIRECCION" }
+    $candidates += [pscustomobject]@{
+      fecha = [string]$row.fecha
+      descripcion = [string]$row.descripcion
+      cargo = [double]$row.cargo
+      abono = [double]$row.abono
+      monto = [double]$row.monto
+      direccion = [string]$row.direccion
+      estado = $estado
+      firestoreMatchId = if ($match) { [string]$match.id } else { "" }
+      sourceFile = [string]$row.sourceFile
+      raw = [string]$row.raw
+    }
+  }
+
+  $report = [pscustomobject]@{
+    generatedAt = $Now.ToString("o")
+    date = $dateKey
+    mailbox = $mailbox
+    mode = "mirror"
+    summary = [pscustomobject]@{
+      messagesFound = @($messages).Count
+      attachmentsSaved = @($saved | Where-Object { $_.filePath }).Count
+      attachmentsWithoutContent = @($saved | Where-Object { $_.status -eq "SIN_CONTENT_BYTES" }).Count
+      rowsParsed = @($parsedRows).Count
+      newCandidates = @($candidates | Where-Object { $_.estado -eq "NUEVO_PROBABLE" }).Count
+      duplicates = @($candidates | Where-Object { $_.estado -eq "DUPLICADO_PROBABLE" }).Count
+      reviewDirection = @($candidates | Where-Object { $_.estado -eq "REVISION_DIRECCION" }).Count
+      firestoreBankRows = @($bankRows).Count
+    }
+    messages = $messageSummary
+    attachments = $saved
+    candidates = $candidates
+    notes = @(
+      "No escribe fin_mov_bancarios.",
+      "No marca correos como leidos.",
+      "No reemplaza Clay hasta validar formato BICE y duplicados con Valentina/Felix."
+    )
+  }
+  $html = Render-BiceCartolaMailHtml -Report $report
+  Write-TextFileToGraph -Token $GraphToken -SiteId $SiteId -FilePath "$folder/$dateKey-$runKey.json" -Text ($report | ConvertTo-Json -Depth 80) -ContentType "application/json; charset=utf-8"
+  Write-TextFileToGraph -Token $GraphToken -SiteId $SiteId -FilePath "$folder/$dateKey-$runKey.html" -Text $html -ContentType "text/html; charset=utf-8"
+  Write-Output "BICE cartola mail: correos=$($report.summary.messagesFound) adjuntos=$($report.summary.attachmentsSaved) filas=$($report.summary.rowsParsed) nuevos=$($report.summary.newCandidates) duplicados=$($report.summary.duplicates)."
+  Write-Output "BICE cartola mail: outputs guardados en $folder. No se envio correo y no se modifico banco."
+}
+
 function Invoke-Finanzas {
   param([object]$Config, [string]$GraphToken, [string]$SiteId, [datetime]$Now, [bool]$DoSendEmail)
   Write-Output "Finanzas: leyendo Firestore."
@@ -2298,4 +2683,6 @@ if ($Mode -eq "test") {
   Invoke-Finanzas -Config $config -GraphToken $graphToken -SiteId $siteId -Now $now -DoSendEmail $SendEmail
 } elseif ($Mode -eq "finanzas_respuestas") {
   Invoke-FinanzasResponder -Config $config -GraphToken $graphToken -SiteId $siteId -Now $now
+} elseif ($Mode -eq "bice_cartola_mail") {
+  Invoke-BiceCartolaMail -Config $config -GraphToken $graphToken -SiteId $siteId -Now $now
 }

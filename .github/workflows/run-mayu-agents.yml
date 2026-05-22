@@ -15,6 +15,7 @@ on:
           - bodega_materiales_respuestas
           - finanzas
           - finanzas_respuestas
+          - bice_cartola_mail
           - test
       date:
         description: "Fecha YYYY-MM-DD"
