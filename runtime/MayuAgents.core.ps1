@@ -2017,7 +2017,7 @@ function ConvertFrom-BiceCartolaText {
     $withoutDate = $raw -replace "(?<!\d)(20\d{2})[/-](\d{1,2})[/-](\d{1,2})(?!\d)", " "
     $withoutDate = $withoutDate -replace "(?<!\d)(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})(?!\d)", " "
     $amounts = @()
-    foreach ($match in [regex]::Matches($withoutDate, "-?\$?\s*\d{1,3}(?:[\.\s]\d{3})+(?:,\d{1,2})?|-?\$?\s*\d{4,}(?:,\d{1,2})?")) {
+    foreach ($match in [regex]::Matches($withoutDate, '-?\$?\s*\d{1,3}(?:[\.\s]\d{3})+(?:,\d{1,2})?|-?\$?\s*\d{4,}(?:,\d{1,2})?')) {
       $n = [Math]::Abs((ConvertFrom-ClpText -Text $match.Value))
       if ($n -ge 100 -and $n -lt 2000000000) { $amounts += $n }
     }
