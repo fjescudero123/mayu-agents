@@ -2174,6 +2174,12 @@ function Invoke-BiceCartolaMail {
   $html = Render-BiceCartolaMailHtml -Report $report
   Write-TextFileToGraph -Token $GraphToken -SiteId $SiteId -FilePath "$folder/$dateKey-$runKey.json" -Text ($report | ConvertTo-Json -Depth 80) -ContentType "application/json; charset=utf-8"
   Write-TextFileToGraph -Token $GraphToken -SiteId $SiteId -FilePath "$folder/$dateKey-$runKey.html" -Text $html -ContentType "text/html; charset=utf-8"
+  foreach ($msgRow in @($messageSummary)) {
+    Write-Output "BICE mensaje: recibido=$($msgRow.receivedDateTime) de=$($msgRow.from) asunto='$($msgRow.subject)' adjuntos=$($msgRow.attachments)."
+  }
+  foreach ($attRow in @($saved)) {
+    Write-Output "BICE adjunto: nombre='$($attRow.name)' status=$($attRow.status) filas=$($attRow.rowsParsed) size=$($attRow.size) contentType='$($attRow.contentType)'."
+  }
   Write-Output "BICE cartola mail: correos=$($report.summary.messagesFound) adjuntos=$($report.summary.attachmentsSaved) filas=$($report.summary.rowsParsed) nuevos=$($report.summary.newCandidates) duplicados=$($report.summary.duplicates)."
   Write-Output "BICE cartola mail: outputs guardados en $folder. No se envio correo y no se modifico banco."
 }
