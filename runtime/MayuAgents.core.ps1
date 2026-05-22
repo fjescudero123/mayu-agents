@@ -2005,8 +2005,22 @@ function Get-GraphMailboxMessages {
 
 function Get-GraphMessageAttachments {
   param([string]$Token, [string]$Mailbox, [string]$MessageId)
-  $uri = "https://graph.microsoft.com/v1.0/users/$Mailbox/messages/$MessageId/attachments?`$select=id,name,contentType,size,isInline,contentBytes"
-  @((Invoke-GraphGet -Token $Token -Uri $uri).value)
+  $uri = "https://graph.microsoft.com/v1.0/users/$Mailbox/messages/$MessageId/attachments?`$select=id,name,contentType,size,isInline"
+  $items = @((Invoke-GraphGet -Token $Token -Uri $uri).value)
+  $full = @()
+  foreach ($att in @($items)) {
+    $attId = [string]$att.id
+    if ([string]::IsNullOrWhiteSpace($attId)) {
+      $full += $att
+      continue
+    }
+    try {
+      $full += (Invoke-GraphGet -Token $Token -Uri "https://graph.microsoft.com/v1.0/users/$Mailbox/messages/$MessageId/attachments/$attId")
+    } catch {
+      $full += $att
+    }
+  }
+  @($full)
 }
 
 function Test-BiceCartolaMessage {
