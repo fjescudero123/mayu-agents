@@ -1590,21 +1590,25 @@ function Get-FinanceIssues {
     @($Rows | Where-Object { [string]$_.tipo -eq $Tipo } | Sort-Object { -1 * (Get-Number $_.createdAt) } | Select-Object -First 1)
   }
   function Add-FuenteFinancieraIssue([string]$Nombre, [string]$TipoImportacion, [string]$FechaMaxima, [int]$DiasRojo, [int]$DiasAmarillo) {
+    $latest = @(Get-LatestImportFinanzas -Rows @($Data.fin_importaciones) -Tipo $TipoImportacion | Select-Object -First 1)
+    $archivo = if ($latest.Count -gt 0) { [string]$latest[0].archivo } else { "sin registro de importacion" }
+    $importado = "sin fecha"
+    $diasImportacion = $null
+    if ($latest.Count -gt 0 -and $latest[0].createdAt) {
+      $importDate = ([DateTimeOffset]::FromUnixTimeMilliseconds([int64](Get-Number $latest[0].createdAt))).Date
+      $importado = $importDate.ToString("yyyy-MM-dd")
+      $diasImportacion = [int](New-TimeSpan -Start $importDate -End $Now.Date).TotalDays
+      if ($diasImportacion -lt $DiasAmarillo) { return }
+    }
     if ([string]::IsNullOrWhiteSpace($FechaMaxima)) {
-      Add-Issue $issues (New-FinanceIssue -Code "F-D01" -Severity "rojo" -Area "Datos Finanzas" -Title "Fuente sin datos: $Nombre" -Detail "No hay datos cargados para $Nombre. El analisis financiero queda incompleto." -Owner "Valentina" -Action "Importar archivo actualizado en Finanzas > Importar." -Ref "fin_importaciones")
+      Add-Issue $issues (New-FinanceIssue -Code "F-D01" -Severity "rojo" -Area "Datos Finanzas" -Title "Fuente sin datos: $Nombre" -Detail "No hay datos cargados para $Nombre. Ultima importacion registrada: $archivo, importada $importado." -Owner "Valentina" -Action "Revisar la automatizacion o importar archivo actualizado en Finanzas > Importar." -Ref "fin_importaciones")
       return
     }
     $dias = [int](New-TimeSpan -Start ([datetime]::Parse($FechaMaxima)) -End $Now.Date).TotalDays
-    if ($dias -lt $DiasAmarillo) { return }
-    $latest = @(Get-LatestImportFinanzas -Rows @($Data.fin_importaciones) -Tipo $TipoImportacion | Select-Object -First 1)
-    $archivo = if ($latest.Count -gt 0) { [string]$latest[0].archivo } else { "sin registro de importacion" }
-    $importado = if ($latest.Count -gt 0 -and $latest[0].createdAt) {
-      ([DateTimeOffset]::FromUnixTimeMilliseconds([int64](Get-Number $latest[0].createdAt))).ToString("yyyy-MM-dd")
-    } else {
-      "sin fecha"
-    }
-    $sev = if ($dias -ge $DiasRojo) { "rojo" } else { "amarillo" }
-    Add-Issue $issues (New-FinanceIssue -Code "F-D02" -Severity $sev -Area "Datos Finanzas" -Title "Fuente desactualizada: $Nombre" -Detail "$Nombre tiene datos hasta $FechaMaxima ($dias dia(s) sin datos nuevos). Ultima importacion registrada: $archivo, importada $importado." -Owner "Valentina" -Action "Subir archivo actualizado antes de usar caja, CxP/CxC o EERR para gerencia." -Ref "fin_importaciones")
+    if ($dias -lt $DiasAmarillo -and $null -eq $diasImportacion) { return }
+    $diasBase = if ($null -ne $diasImportacion) { $diasImportacion } else { $dias }
+    $sev = if ($diasBase -ge $DiasRojo) { "rojo" } else { "amarillo" }
+    Add-Issue $issues (New-FinanceIssue -Code "F-D02" -Severity $sev -Area "Datos Finanzas" -Title "Fuente desactualizada: $Nombre" -Detail "$Nombre tuvo su ultima importacion el $importado. Ultimo documento en datos: $FechaMaxima ($dias dia(s) sin documentos nuevos). Archivo/fuente: $archivo." -Owner "Valentina" -Action "Revisar que la automatizacion de la fuente este corriendo; si corrio sin novedades, no corresponde cierre contable sino solo seguimiento de fuente." -Ref "fin_importaciones")
   }
   function Test-NotaCreditoFinanzas([object]$Factura) {
     $tipo = [int](Get-Number $Factura.tipoDte)
