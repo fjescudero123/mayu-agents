@@ -14,6 +14,7 @@
     "traspaso_folder": "agentes_mayu/traspaso_control_operacion",
     "bodega_materiales_folder": "agentes_mayu/bodega_materiales",
     "finanzas_folder": "agentes_mayu/finanzas",
+    "bice_cartolas_folder": "agentes_mayu/bice_cartolas",
     "minutas_seguimiento_folder": "minutas_archivadas/seguimiento_compromisos",
     "links": {
       "hub": "https://mayu-hub.netlify.app/",
@@ -108,6 +109,11 @@
     },
     "finanzas_respuestas": {
       "enabled": true
+    },
+    "bice_cartola_mail": {
+      "enabled": true,
+      "send_email_default": false,
+      "mode": "mirror"
     }
   }
 }

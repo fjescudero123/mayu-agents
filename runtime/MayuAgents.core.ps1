@@ -1,5 +1,5 @@
 param(
-  [ValidateSet("daily_pulse", "bodega_materiales", "bodega_materiales_respuestas", "finanzas", "finanzas_respuestas", "test")]
+  [ValidateSet("daily_pulse", "bodega_materiales", "bodega_materiales_respuestas", "finanzas", "finanzas_respuestas", "bice_cartola_mail", "test")]
   [string]$Mode = "daily_pulse",
   [string]$Date = "",
   [bool]$SendEmail = $true
@@ -110,6 +110,14 @@ function Write-TextFileToGraph {
   $uri = "https://graph.microsoft.com/v1.0/sites/$SiteId/drive/root:/$encoded" + ":/content"
   $bytes = [System.Text.Encoding]::UTF8.GetBytes($Text)
   Invoke-GraphPutBytes -Token $Token -Uri $uri -Bytes $bytes -ContentType $ContentType | Out-Null
+}
+
+function Write-BytesFileToGraph {
+  param([string]$Token, [string]$SiteId, [string]$FilePath, [byte[]]$Bytes, [string]$ContentType)
+  if ([string]::IsNullOrWhiteSpace($ContentType)) { $ContentType = "application/octet-stream" }
+  $encoded = ConvertTo-DrivePath $FilePath
+  $uri = "https://graph.microsoft.com/v1.0/sites/$SiteId/drive/root:/$encoded" + ":/content"
+  Invoke-GraphPutBytes -Token $Token -Uri $uri -Bytes $Bytes -ContentType $ContentType | Out-Null
 }
 
 function Read-TextFileFromGraph {
@@ -225,6 +233,71 @@ function Get-Mayutime {
 function HtmlEscape {
   param([object]$Value)
   [System.Net.WebUtility]::HtmlEncode([string]$Value)
+}
+
+function Get-MayuEmailTone {
+  param([string]$Tone)
+  switch (([string]$Tone).ToLowerInvariant()) {
+    "rojo" { return [pscustomobject]@{ label = "Rojo"; accent = "#d92d20"; bg = "#fff5f5"; soft = "#fef3f2" } }
+    "critico" { return [pscustomobject]@{ label = "Critico"; accent = "#d92d20"; bg = "#fff5f5"; soft = "#fef3f2" } }
+    "amarillo" { return [pscustomobject]@{ label = "Amarillo"; accent = "#d97706"; bg = "#fffbeb"; soft = "#fef7e0" } }
+    "alto" { return [pscustomobject]@{ label = "Alto"; accent = "#d97706"; bg = "#fffbeb"; soft = "#fef7e0" } }
+    "medio" { return [pscustomobject]@{ label = "Medio"; accent = "#ca8a04"; bg = "#fffbeb"; soft = "#fef7e0" } }
+    "bajo" { return [pscustomobject]@{ label = "Bajo"; accent = "#2563eb"; bg = "#f4f7fb"; soft = "#eef4ff" } }
+    "verde" { return [pscustomobject]@{ label = "Verde"; accent = "#168a50"; bg = "#f0fdf4"; soft = "#ecfdf3" } }
+    default { return [pscustomobject]@{ label = "Info"; accent = "#2563eb"; bg = "#f4f7fb"; soft = "#eef4ff" } }
+  }
+}
+
+function New-MayuEmailMetric {
+  param([string]$Label, [object]$Value, [string]$Tone = "info")
+  $toneInfo = Get-MayuEmailTone -Tone $Tone
+  "<td style='padding:0 8px 8px 0;vertical-align:top;'><div style='border:1px solid #e5e7eb;border-left:4px solid $($toneInfo.accent);background:#ffffff;padding:10px 12px;min-width:110px;'><div style='font-size:11px;line-height:1.25;color:#6b7280;text-transform:uppercase;letter-spacing:.3px;'>$(HtmlEscape $Label)</div><div style='font-size:22px;line-height:1.15;color:#202124;font-weight:700;margin-top:3px;'>$(HtmlEscape $Value)</div></div></td>"
+}
+
+function New-MayuEmailSection {
+  param([string]$Title, [string]$Html)
+  @"
+<div style="margin-top:22px;">
+  <h3 style="font-size:16px;line-height:1.3;color:#202124;margin:0 0 10px 0;">$(HtmlEscape $Title)</h3>
+  $Html
+</div>
+"@
+}
+
+function New-MayuEmptyState {
+  param([string]$Text)
+  "<div style='border:1px solid #d9eadf;border-left:4px solid #168a50;background:#f7fbf8;padding:12px 14px;color:#234234;'>$(HtmlEscape $Text)</div>"
+}
+
+function New-MayuEmailLayout {
+  param([string]$Title, [string]$Subtitle, [string]$ContentHtml, [string]$Footer = "Generado por MAYU Agents.")
+  @"
+<html>
+<body style="margin:0;padding:0;background:#f6f8fb;font-family:Arial,sans-serif;color:#202124;font-size:14px;line-height:1.45;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f6f8fb;padding:20px 0;">
+    <tr>
+      <td align="center">
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:980px;background:#ffffff;border:1px solid #e5e7eb;">
+          <tr>
+            <td style="border-left:4px solid #0078d4;background:#f4f7fb;padding:18px 22px;">
+              <h2 style="font-size:22px;line-height:1.25;color:#202124;margin:0 0 4px 0;">$(HtmlEscape $Title)</h2>
+              <p style="margin:0;color:#5f6368;">$(HtmlEscape $Subtitle)</p>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:20px 22px;">
+              $ContentHtml
+              <p style="font-size:12px;line-height:1.4;color:#777;margin:28px 0 0 0;">$(HtmlEscape $Footer)</p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
+"@
 }
 
 function Get-Number {
@@ -1159,6 +1232,7 @@ function Write-BodegaPprPvcCandidates {
 
 function Render-BodegaMaterialesHtml {
   param([object]$Report)
+  return Render-BodegaMaterialesHtmlV2 -Report $Report
   $s = $Report.summary
   $rows = Render-IssueList -Items @($Report.issues | Select-Object -First 80)
   @"
@@ -1198,7 +1272,7 @@ function Invoke-BodegaMateriales {
   foreach ($issue in @($report.issues | Select-Object -First 25)) {
     Write-Output "Bodega+Materiales alerta: [$($issue.level)] $($issue.checkId) $($issue.title) | $($issue.ref) | $($issue.action)"
   }
-  $html = Render-BodegaMaterialesHtml -Report $report
+  $html = Render-BodegaMaterialesHtmlV2 -Report $report
   $dateKey = $report.date
   Ensure-GraphFolder -Token $GraphToken -SiteId $SiteId -FolderPath $Config.sharepoint.bodega_materiales_folder
   Write-TextFileToGraph -Token $GraphToken -SiteId $SiteId -FilePath "$($Config.sharepoint.bodega_materiales_folder)/$dateKey.json" -Text ($report | ConvertTo-Json -Depth 80) -ContentType "application/json; charset=utf-8"
@@ -1408,7 +1482,7 @@ function Invoke-BodegaMaterialesResponder {
 
     $checkId = Resolve-BodegaHelpCheckId -Text $bodyText
     $help = Get-BodegaHelpDefinition -CheckId $checkId
-    $reply = Render-BodegaHelpReplyHtml -Help $help -CheckId $checkId
+    $reply = Render-HelpReplyCard -Intro "Hola. Respondo solo sobre como resolver manualmente alertas de Bodega + Materiales." -Help $help -Code $checkId
     $audience = Get-UniqueEmails -Emails @((Get-BodegaMaterialesMailAudience -Config $Config) + $from) -Exclude @($mailbox)
     $replySubject = if ($subject -match "^(?i)re:") { $subject } else { "RE: $subject" }
     Send-GraphMail -Token $GraphToken -Sender $mailbox -To $audience -Cc @() -Subject $replySubject -HtmlBody $reply
@@ -1573,6 +1647,7 @@ function Build-FinanzasReport {
 
 function Render-FinanzasHtml {
   param([object]$Report)
+  return Render-FinanzasHtmlV2 -Report $Report
   $s = $Report.summary
   @"
 <html>
@@ -1719,6 +1794,383 @@ function Render-FinanzasHelpReplyHtml {
 "@
 }
 
+function ConvertTo-SafeFileName {
+  param([string]$Name)
+  $clean = ([string]$Name).Trim()
+  if ([string]::IsNullOrWhiteSpace($clean)) { $clean = "archivo" }
+  $clean = $clean -replace '[\\/:*?"<>|#%&{}$!@+`=]', "_"
+  $clean = $clean -replace "\s+", " "
+  if ($clean.Length -gt 120) { $clean = $clean.Substring(0, 120) }
+  $clean
+}
+
+function ConvertFrom-ClpText {
+  param([string]$Text)
+  $raw = ([string]$Text).Trim()
+  if ([string]::IsNullOrWhiteSpace($raw)) { return 0.0 }
+  $negative = $raw -match "^\s*-|\(\s*[\$0-9]"
+  $clean = $raw -replace "[^\d,.\-]", ""
+  $clean = $clean -replace "^-", ""
+  if ([string]::IsNullOrWhiteSpace($clean)) { return 0.0 }
+  $lastComma = $clean.LastIndexOf(",")
+  $lastDot = $clean.LastIndexOf(".")
+  if ($lastComma -ge 0 -and $lastDot -ge 0) {
+    if ($lastComma -gt $lastDot) {
+      $clean = ($clean -replace "\.", "")
+      $clean = ($clean -replace ",\d{1,2}$", "")
+    } else {
+      $clean = ($clean -replace ",", "")
+      $clean = ($clean -replace "\.\d{1,2}$", "")
+    }
+  } elseif ($lastComma -ge 0) {
+    $clean = ($clean -replace ",\d{1,2}$", "")
+    $clean = ($clean -replace ",", "")
+  } elseif ($lastDot -ge 0) {
+    $groups = @($clean -split "\.")
+    if ($groups.Count -gt 1 -and $groups[-1].Length -eq 3) {
+      $clean = $clean -replace "\.", ""
+    } else {
+      $clean = ($clean -replace "\.\d{1,2}$", "")
+      $clean = $clean -replace "\.", ""
+    }
+  }
+  if ([string]::IsNullOrWhiteSpace($clean)) { return 0.0 }
+  try {
+    $value = [double]$clean
+    if ($negative) { $value = -1 * $value }
+    return $value
+  } catch {
+    return 0.0
+  }
+}
+
+function ConvertTo-BiceIsoDate {
+  param([string]$Text)
+  $value = [string]$Text
+  $m = [regex]::Match($value, "(?<!\d)(?<y>20\d{2})[/-](?<m>\d{1,2})[/-](?<d>\d{1,2})(?!\d)")
+  if ($m.Success) {
+    return "{0:0000}-{1:00}-{2:00}" -f [int]$m.Groups["y"].Value, [int]$m.Groups["m"].Value, [int]$m.Groups["d"].Value
+  }
+  $m = [regex]::Match($value, "(?<!\d)(?<d>\d{1,2})[/-](?<m>\d{1,2})[/-](?<y>\d{2,4})(?!\d)")
+  if ($m.Success) {
+    $year = [int]$m.Groups["y"].Value
+    if ($year -lt 100) { $year += 2000 }
+    return "{0:0000}-{1:00}-{2:00}" -f $year, [int]$m.Groups["m"].Value, [int]$m.Groups["d"].Value
+  }
+  ""
+}
+
+function ConvertFrom-XlsxBytesToText {
+  param([byte[]]$Bytes)
+  try {
+    Add-Type -AssemblyName System.IO.Compression -ErrorAction SilentlyContinue
+    $stream = [System.IO.MemoryStream]::new($Bytes)
+    $zip = [System.IO.Compression.ZipArchive]::new($stream, [System.IO.Compression.ZipArchiveMode]::Read)
+    $shared = @()
+    $sharedEntry = $zip.GetEntry("xl/sharedStrings.xml")
+    if ($sharedEntry) {
+      $reader = [System.IO.StreamReader]::new($sharedEntry.Open())
+      $sharedXml = $reader.ReadToEnd()
+      $reader.Dispose()
+      foreach ($si in [regex]::Matches($sharedXml, "<si\b[^>]*>(.*?)</si>", [System.Text.RegularExpressions.RegexOptions]::Singleline)) {
+        $parts = @()
+        foreach ($t in [regex]::Matches($si.Groups[1].Value, "<t\b[^>]*>(.*?)</t>", [System.Text.RegularExpressions.RegexOptions]::Singleline)) {
+          $parts += [System.Net.WebUtility]::HtmlDecode(($t.Groups[1].Value -replace "<[^>]+>", ""))
+        }
+        $shared += ($parts -join "")
+      }
+    }
+    $lines = @()
+    foreach ($entry in @($zip.Entries | Where-Object { $_.FullName -match "^xl/worksheets/sheet\d+\.xml$" } | Sort-Object FullName)) {
+      $reader = [System.IO.StreamReader]::new($entry.Open())
+      $sheetXml = $reader.ReadToEnd()
+      $reader.Dispose()
+      foreach ($row in [regex]::Matches($sheetXml, "<row\b[^>]*>(.*?)</row>", [System.Text.RegularExpressions.RegexOptions]::Singleline)) {
+        $cells = @()
+        foreach ($cell in [regex]::Matches($row.Groups[1].Value, "<c\b([^>]*)>(.*?)</c>", [System.Text.RegularExpressions.RegexOptions]::Singleline)) {
+          $attrs = $cell.Groups[1].Value
+          $body = $cell.Groups[2].Value
+          $value = ""
+          $vm = [regex]::Match($body, "<v>(.*?)</v>", [System.Text.RegularExpressions.RegexOptions]::Singleline)
+          if ($vm.Success) { $value = [System.Net.WebUtility]::HtmlDecode($vm.Groups[1].Value) }
+          if ($attrs -match 't="s"' -and $value -match "^\d+$") {
+            $idx = [int]$value
+            if ($idx -ge 0 -and $idx -lt $shared.Count) { $value = $shared[$idx] }
+          } elseif ($attrs -match 't="inlineStr"') {
+            $tm = [regex]::Match($body, "<t\b[^>]*>(.*?)</t>", [System.Text.RegularExpressions.RegexOptions]::Singleline)
+            if ($tm.Success) { $value = [System.Net.WebUtility]::HtmlDecode($tm.Groups[1].Value) }
+          }
+          $cells += $value
+        }
+        $line = ($cells -join "`t").Trim()
+        if ($line) { $lines += $line }
+      }
+    }
+    $zip.Dispose()
+    $stream.Dispose()
+    return ($lines -join "`n")
+  } catch {
+    return ""
+  }
+}
+
+function ConvertFrom-BiceAttachmentBytesToText {
+  param([byte[]]$Bytes, [string]$FileName, [string]$ContentType)
+  $name = ([string]$FileName).ToLowerInvariant()
+  if ($name.EndsWith(".xlsx") -or ([string]$ContentType).ToLowerInvariant().Contains("spreadsheetml")) {
+    return ConvertFrom-XlsxBytesToText -Bytes $Bytes
+  }
+  $text = [System.Text.Encoding]::UTF8.GetString($Bytes)
+  if ($text -match "\x00") {
+    try { $text = [System.Text.Encoding]::Unicode.GetString($Bytes) } catch { }
+  }
+  if ($name.EndsWith(".html") -or $name.EndsWith(".htm") -or ([string]$ContentType).ToLowerInvariant().Contains("html")) {
+    $text = $text -replace "(?i)</t[dh]>", "`t"
+    $text = $text -replace "(?i)</tr>", "`n"
+    $text = $text -replace "(?is)<script.*?</script>", " "
+    $text = $text -replace "(?is)<style.*?</style>", " "
+    $text = $text -replace "(?s)<[^>]+>", " "
+    $text = [System.Net.WebUtility]::HtmlDecode($text)
+  }
+  $text
+}
+
+function ConvertFrom-BiceCartolaText {
+  param([string]$Text, [string]$SourceFile)
+  $rows = @()
+  $lines = @(([string]$Text -split "`r?`n") | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+  $lineNo = 0
+  foreach ($line in $lines) {
+    $lineNo++
+    $raw = ([string]$line).Trim()
+    if ($raw -match "(?i)fecha.*(descripcion|detalle)|saldo anterior|saldo disponible|total") { continue }
+    $date = ConvertTo-BiceIsoDate -Text $raw
+    if ([string]::IsNullOrWhiteSpace($date)) { continue }
+
+    $withoutDate = $raw -replace "(?<!\d)(20\d{2})[/-](\d{1,2})[/-](\d{1,2})(?!\d)", " "
+    $withoutDate = $withoutDate -replace "(?<!\d)(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})(?!\d)", " "
+    $cols = @($raw -split "`t|;")
+    $amounts = @()
+    foreach ($match in [regex]::Matches($withoutDate, "-?\$?\s*\d{1,3}(?:[\.\s]\d{3})+(?:,\d{1,2})?|-?\$?\s*\d{4,}(?:,\d{1,2})?")) {
+      $n = [Math]::Abs((ConvertFrom-ClpText -Text $match.Value))
+      if ($n -ge 100 -and $n -lt 2000000000) { $amounts += $n }
+    }
+    $amounts = @($amounts | Select-Object -Unique)
+    if ($amounts.Count -eq 0) { continue }
+
+    $cargo = 0.0
+    $abono = 0.0
+    $direction = "DESCONOCIDO"
+    if ($cols.Count -ge 4) {
+      $tail = @()
+      foreach ($c in @($cols | Select-Object -Last 4)) {
+        $n = [Math]::Abs((ConvertFrom-ClpText -Text $c))
+        if ($n -gt 0) { $tail += $n } else { $tail += 0.0 }
+      }
+      if ($tail.Count -ge 2) {
+        $candidateCargo = [double]$tail[$tail.Count - 2]
+        $candidateAbono = [double]$tail[$tail.Count - 1]
+        if ($candidateCargo -gt 0 -or $candidateAbono -gt 0) {
+          $cargo = $candidateCargo
+          $abono = $candidateAbono
+        }
+      }
+    }
+    if ($cargo -eq 0 -and $abono -eq 0) {
+      $amount = [double]$amounts[-1]
+      if ($raw -match "(?i)\babono\b|deposito|deposito|transferencia recibida|haber|credito") {
+        $abono = $amount
+      } elseif ($raw -match "(?i)\bcargo\b|giro|pago|debito|comision|impuesto|transferencia a") {
+        $cargo = $amount
+      } else {
+        $cargo = 0.0
+        $abono = 0.0
+      }
+    }
+    if ($cargo -gt 0) { $direction = "CARGO" }
+    if ($abono -gt 0) { $direction = "ABONO" }
+    $rows += [pscustomobject]@{
+      fecha = $date
+      descripcion = ($withoutDate -replace "\s+", " ").Trim()
+      cargo = [Math]::Round($cargo, 0)
+      abono = [Math]::Round($abono, 0)
+      monto = if ($cargo -gt 0) { [Math]::Round($cargo, 0) } elseif ($abono -gt 0) { [Math]::Round($abono, 0) } else { [Math]::Round([double]$amounts[-1], 0) }
+      direccion = $direction
+      sourceFile = $SourceFile
+      lineNumber = $lineNo
+      raw = $raw
+    }
+  }
+  @($rows)
+}
+
+function Get-GraphMailboxMessages {
+  param([string]$Token, [string]$Mailbox, [int]$Top = 50)
+  $uri = "https://graph.microsoft.com/v1.0/users/$Mailbox/mailFolders/inbox/messages?`$top=$Top&`$orderby=receivedDateTime desc&`$select=id,subject,from,bodyPreview,isRead,receivedDateTime,hasAttachments"
+  @((Invoke-GraphGet -Token $Token -Uri $uri).value)
+}
+
+function Get-GraphMessageAttachments {
+  param([string]$Token, [string]$Mailbox, [string]$MessageId)
+  $uri = "https://graph.microsoft.com/v1.0/users/$Mailbox/messages/$MessageId/attachments?`$select=id,name,contentType,size,isInline,contentBytes"
+  @((Invoke-GraphGet -Token $Token -Uri $uri).value)
+}
+
+function Test-BiceCartolaMessage {
+  param([object]$Message)
+  $text = "$($Message.subject)`n$($Message.from.emailAddress.address)`n$($Message.bodyPreview)"
+  return ($text -match "(?i)bice|cartola|cuenta corriente|estado de cuenta|25-00114")
+}
+
+function Find-BiceExistingBankMatch {
+  param([object]$Row, [object[]]$BankRows)
+  $date = [string]$Row.fecha
+  $cargo = [Math]::Round((Get-Number $Row.cargo), 0)
+  $abono = [Math]::Round((Get-Number $Row.abono), 0)
+  $amount = [Math]::Round((Get-Number $Row.monto), 0)
+  foreach ($mov in @($BankRows | Where-Object { [string]$_.fecha -eq $date })) {
+    $movCargo = [Math]::Round((Get-Number $mov.cargo), 0)
+    $movAbono = [Math]::Round((Get-Number $mov.abono), 0)
+    if ($cargo -gt 0 -and $movCargo -eq $cargo) { return $mov }
+    if ($abono -gt 0 -and $movAbono -eq $abono) { return $mov }
+    if ($cargo -eq 0 -and $abono -eq 0 -and $amount -gt 0 -and ($movCargo -eq $amount -or $movAbono -eq $amount)) { return $mov }
+  }
+  $null
+}
+
+function Render-BiceCartolaMailHtml {
+  param([object]$Report)
+  $messageRows = (@($Report.messages) | ForEach-Object {
+    "<tr><td style='border:1px solid #ddd;padding:6px;'>$(HtmlEscape $_.receivedDateTime)</td><td style='border:1px solid #ddd;padding:6px;'>$(HtmlEscape $_.from)</td><td style='border:1px solid #ddd;padding:6px;'>$(HtmlEscape $_.subject)</td><td style='border:1px solid #ddd;padding:6px;text-align:right;'>$($_.attachments)</td></tr>"
+  }) -join ""
+  if (-not $messageRows) { $messageRows = "<tr><td colspan='4' style='border:1px solid #ddd;padding:8px;color:#666;'>No se encontraron correos BICE/cartola en la ventana revisada.</td></tr>" }
+  $candidateRows = (@($Report.candidates | Select-Object -First 80) | ForEach-Object {
+    "<tr><td style='border:1px solid #ddd;padding:6px;'>$(HtmlEscape $_.fecha)</td><td style='border:1px solid #ddd;padding:6px;'>$(HtmlEscape $_.direccion)</td><td style='border:1px solid #ddd;padding:6px;text-align:right;'>$(Format-Clp (Get-Number $_.monto))</td><td style='border:1px solid #ddd;padding:6px;'>$(HtmlEscape $_.estado)</td><td style='border:1px solid #ddd;padding:6px;'>$(HtmlEscape $_.descripcion)</td></tr>"
+  }) -join ""
+  if (-not $candidateRows) { $candidateRows = "<tr><td colspan='5' style='border:1px solid #ddd;padding:8px;color:#666;'>Sin filas legibles con fecha y monto.</td></tr>" }
+  $metrics = @(
+    New-MayuEmailMetric -Label "Correos" -Value $Report.summary.messagesFound -Tone "info"
+    New-MayuEmailMetric -Label "Adjuntos" -Value $Report.summary.attachmentsSaved -Tone "info"
+    New-MayuEmailMetric -Label "Filas leidas" -Value $Report.summary.rowsParsed -Tone "info"
+    New-MayuEmailMetric -Label "Nuevos probables" -Value $Report.summary.newCandidates -Tone "amarillo"
+    New-MayuEmailMetric -Label "Duplicados" -Value $Report.summary.duplicates -Tone "verde"
+  ) -join ""
+  $content = @"
+<table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin:0 0 10px 0;"><tr>$metrics</tr></table>
+<p style="margin:0 0 12px 0;color:#4b5563;">Modo espejo: este agente no escribe movimientos bancarios, no marca correos como leidos y no corta Clay. Solo guarda respaldo y compara contra Finanzas.</p>
+<h3 style="font-size:16px;margin:18px 0 8px 0;">Correos revisados</h3>
+<table style="border-collapse:collapse;width:100%;font-size:13px;"><tr><th style='border:1px solid #ddd;padding:6px;text-align:left;'>Recibido</th><th style='border:1px solid #ddd;padding:6px;text-align:left;'>De</th><th style='border:1px solid #ddd;padding:6px;text-align:left;'>Asunto</th><th style='border:1px solid #ddd;padding:6px;text-align:right;'>Adj.</th></tr>$messageRows</table>
+<h3 style="font-size:16px;margin:18px 0 8px 0;">Candidatos de cartola</h3>
+<table style="border-collapse:collapse;width:100%;font-size:13px;"><tr><th style='border:1px solid #ddd;padding:6px;text-align:left;'>Fecha</th><th style='border:1px solid #ddd;padding:6px;text-align:left;'>Tipo</th><th style='border:1px solid #ddd;padding:6px;text-align:right;'>Monto</th><th style='border:1px solid #ddd;padding:6px;text-align:left;'>Estado</th><th style='border:1px solid #ddd;padding:6px;text-align:left;'>Descripcion</th></tr>$candidateRows</table>
+"@
+  New-MayuEmailLayout -Title "BICE Cartola Mail" -Subtitle $Report.date -ContentHtml $content -Footer "Modo espejo BICE. No reemplaza Clay hasta validacion humana."
+}
+
+function Invoke-BiceCartolaMail {
+  param([object]$Config, [string]$GraphToken, [string]$SiteId, [datetime]$Now)
+  $mailbox = [string]$Config.mail.sender
+  $folder = [string]$Config.sharepoint.bice_cartolas_folder
+  if ([string]::IsNullOrWhiteSpace($folder)) { $folder = "$($Config.sharepoint.base_folder)/bice_cartolas" }
+  $dateKey = $Now.ToString("yyyy-MM-dd")
+  $runKey = $Now.ToString("yyyyMMdd-HHmmss")
+  Write-Output "BICE cartola mail: leyendo inbox de $mailbox en modo espejo."
+  Ensure-GraphFolder -Token $GraphToken -SiteId $SiteId -FolderPath $folder
+  Ensure-GraphFolder -Token $GraphToken -SiteId $SiteId -FolderPath "$folder/raw/$dateKey"
+
+  $messages = @(Get-GraphMailboxMessages -Token $GraphToken -Mailbox $mailbox -Top 50 | Where-Object { Test-BiceCartolaMessage -Message $_ } | Select-Object -First 10)
+  $data = Get-FirestoreData -Config $Config
+  $bankRows = @($data.fin_mov_bancarios)
+  $saved = @()
+  $parsedRows = @()
+  $messageSummary = @()
+
+  foreach ($msg in @($messages)) {
+    $attachments = @()
+    if ($msg.hasAttachments) {
+      $attachments = @(Get-GraphMessageAttachments -Token $GraphToken -Mailbox $mailbox -MessageId ([string]$msg.id) | Where-Object { -not $_.isInline })
+    }
+    $messageSummary += [pscustomobject]@{
+      id = [string]$msg.id
+      receivedDateTime = [string]$msg.receivedDateTime
+      from = [string]$msg.from.emailAddress.address
+      subject = [string]$msg.subject
+      attachments = @($attachments).Count
+      isRead = [bool]$msg.isRead
+    }
+    foreach ($att in @($attachments)) {
+      $name = ConvertTo-SafeFileName -Name ([string]$att.name)
+      $contentType = [string]$att.contentType
+      if ([string]::IsNullOrWhiteSpace([string]$att.contentBytes)) {
+        $saved += [pscustomobject]@{ name = $name; status = "SIN_CONTENT_BYTES"; size = [int64](Get-Number $att.size); contentType = $contentType; filePath = "" }
+        continue
+      }
+      $bytes = [Convert]::FromBase64String([string]$att.contentBytes)
+      $filePath = "$folder/raw/$dateKey/$runKey-$name"
+      Write-BytesFileToGraph -Token $GraphToken -SiteId $SiteId -FilePath $filePath -Bytes $bytes -ContentType $contentType
+      $text = ConvertFrom-BiceAttachmentBytesToText -Bytes $bytes -FileName $name -ContentType $contentType
+      $rows = @(ConvertFrom-BiceCartolaText -Text $text -SourceFile $name)
+      $parsedRows += $rows
+      $saved += [pscustomobject]@{
+        name = $name
+        status = if ($rows.Count -gt 0) { "PARSE_OK" } else { "SIN_FILAS_LEGIBLES" }
+        size = $bytes.Length
+        contentType = $contentType
+        filePath = $filePath
+        rowsParsed = $rows.Count
+      }
+    }
+  }
+
+  $candidates = @()
+  foreach ($row in @($parsedRows)) {
+    $match = Find-BiceExistingBankMatch -Row $row -BankRows $bankRows
+    $estado = if ($match) { "DUPLICADO_PROBABLE" } else { "NUEVO_PROBABLE" }
+    if ([string]$row.direccion -eq "DESCONOCIDO") { $estado = "REVISION_DIRECCION" }
+    $candidates += [pscustomobject]@{
+      fecha = [string]$row.fecha
+      descripcion = [string]$row.descripcion
+      cargo = [double]$row.cargo
+      abono = [double]$row.abono
+      monto = [double]$row.monto
+      direccion = [string]$row.direccion
+      estado = $estado
+      firestoreMatchId = if ($match) { [string]$match.id } else { "" }
+      sourceFile = [string]$row.sourceFile
+      raw = [string]$row.raw
+    }
+  }
+
+  $report = [pscustomobject]@{
+    generatedAt = $Now.ToString("o")
+    date = $dateKey
+    mailbox = $mailbox
+    mode = "mirror"
+    summary = [pscustomobject]@{
+      messagesFound = @($messages).Count
+      attachmentsSaved = @($saved | Where-Object { $_.filePath }).Count
+      attachmentsWithoutContent = @($saved | Where-Object { $_.status -eq "SIN_CONTENT_BYTES" }).Count
+      rowsParsed = @($parsedRows).Count
+      newCandidates = @($candidates | Where-Object { $_.estado -eq "NUEVO_PROBABLE" }).Count
+      duplicates = @($candidates | Where-Object { $_.estado -eq "DUPLICADO_PROBABLE" }).Count
+      reviewDirection = @($candidates | Where-Object { $_.estado -eq "REVISION_DIRECCION" }).Count
+      firestoreBankRows = @($bankRows).Count
+    }
+    messages = $messageSummary
+    attachments = $saved
+    candidates = $candidates
+    notes = @(
+      "No escribe fin_mov_bancarios.",
+      "No marca correos como leidos.",
+      "No reemplaza Clay hasta validar formato BICE y duplicados con Valentina/Felix."
+    )
+  }
+  $html = Render-BiceCartolaMailHtml -Report $report
+  Write-TextFileToGraph -Token $GraphToken -SiteId $SiteId -FilePath "$folder/$dateKey-$runKey.json" -Text ($report | ConvertTo-Json -Depth 80) -ContentType "application/json; charset=utf-8"
+  Write-TextFileToGraph -Token $GraphToken -SiteId $SiteId -FilePath "$folder/$dateKey-$runKey.html" -Text $html -ContentType "text/html; charset=utf-8"
+  Write-Output "BICE cartola mail: correos=$($report.summary.messagesFound) adjuntos=$($report.summary.attachmentsSaved) filas=$($report.summary.rowsParsed) nuevos=$($report.summary.newCandidates) duplicados=$($report.summary.duplicates)."
+  Write-Output "BICE cartola mail: outputs guardados en $folder. No se envio correo y no se modifico banco."
+}
+
 function Invoke-Finanzas {
   param([object]$Config, [string]$GraphToken, [string]$SiteId, [datetime]$Now, [bool]$DoSendEmail)
   Write-Output "Finanzas: leyendo Firestore."
@@ -1731,7 +2183,7 @@ function Invoke-Finanzas {
   foreach ($issue in @($report.issues | Select-Object -First 25)) {
     Write-Output "Finanzas alerta: [$($issue.severity)] $($issue.code) $($issue.title) | $($issue.ref) | $($issue.action)"
   }
-  $html = Render-FinanzasHtml -Report $report
+  $html = Render-FinanzasHtmlV2 -Report $report
   $dateKey = $report.date
   Ensure-GraphFolder -Token $GraphToken -SiteId $SiteId -FolderPath $Config.sharepoint.finanzas_folder
   Write-TextFileToGraph -Token $GraphToken -SiteId $SiteId -FilePath "$($Config.sharepoint.finanzas_folder)/$dateKey.json" -Text ($report | ConvertTo-Json -Depth 80) -ContentType "application/json; charset=utf-8"
@@ -1776,7 +2228,7 @@ function Invoke-FinanzasResponder {
 
     $code = Resolve-FinanzasHelpCode -Text $bodyText
     $help = Get-FinanzasHelpDefinition -Code $code
-    $reply = Render-FinanzasHelpReplyHtml -Help $help -Code $code
+    $reply = Render-HelpReplyCard -Intro "Hola. Respondo sobre como resolver manualmente alertas de Finanzas." -Help $help -Code $code
     $audience = Get-UniqueEmails -Emails @($Config.mail.felix, $Config.mail.valentina, $from) -Exclude @($mailbox)
     $replySubject = if ($subject -match "^(?i)re:") { $subject } else { "RE: $subject" }
     Send-GraphMail -Token $GraphToken -Sender $mailbox -To $audience -Cc @() -Subject $replySubject -HtmlBody $reply
@@ -2001,8 +2453,131 @@ function Render-IssueList {
   $html
 }
 
+function Render-IssueListCards {
+  param([object[]]$Items)
+  if (@($Items).Count -eq 0) { return (New-MayuEmptyState -Text "Sin alertas relevantes.") }
+  $html = ""
+  foreach ($it in @($Items)) {
+    $rawTone = if ($it.PSObject.Properties["level"]) { [string]$it.level } else { [string]$it.severity }
+    $tone = Get-MayuEmailTone -Tone $rawTone
+    $codeText = ""
+    if ($it.PSObject.Properties["code"] -and -not [string]::IsNullOrWhiteSpace([string]$it.code)) {
+      $codeText = "$($it.code) - "
+    } elseif ($it.PSObject.Properties["checkId"] -and -not [string]::IsNullOrWhiteSpace([string]$it.checkId)) {
+      $codeText = "$($it.checkId) - "
+    }
+    $html += @"
+<div style="border:1px solid #e5e7eb;border-left:4px solid $($tone.accent);background:#ffffff;padding:12px 14px;margin:0 0 10px 0;">
+  <div style="margin-bottom:6px;">
+    <span style="display:inline-block;background:$($tone.soft);border:1px solid $($tone.accent);color:#202124;font-size:11px;line-height:1;text-transform:uppercase;letter-spacing:.3px;padding:5px 7px;">$(HtmlEscape $rawTone)</span>
+    <span style="color:#6b7280;font-size:12px;margin-left:6px;">$(HtmlEscape $it.area)</span>
+  </div>
+  <div style="font-weight:700;color:#202124;margin-bottom:4px;">$(HtmlEscape ($codeText + $it.title))</div>
+  <div style="color:#4b5563;margin-bottom:8px;">$(HtmlEscape $it.detail)</div>
+  <div style="background:#f8fafc;border:1px solid #edf2f7;padding:8px 10px;color:#30343b;"><strong>Accion:</strong> $(HtmlEscape $it.action)</div>
+  <div style="font-size:12px;color:#6b7280;margin-top:7px;"><strong>Responsable:</strong> $(HtmlEscape $it.owner) &nbsp; <strong>Ref:</strong> $(HtmlEscape $it.ref)</div>
+</div>
+"@
+  }
+  $html
+}
+
+function Render-BodegaMaterialesHtmlV2 {
+  param([object]$Report)
+  $s = $Report.summary
+  $metrics = @(
+    New-MayuEmailMetric -Label "Criticas" -Value $s.criticas -Tone "critico"
+    New-MayuEmailMetric -Label "Altas" -Value $s.altas -Tone "alto"
+    New-MayuEmailMetric -Label "Medias" -Value $s.medias -Tone "medio"
+    New-MayuEmailMetric -Label "Bajas" -Value $s.bajas -Tone "bajo"
+  ) -join ""
+  $content = @"
+<table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;margin:0 0 12px 0;"><tr>$metrics</tr></table>
+<div style="background:#f4f7fb;border-left:4px solid #0078d4;padding:12px 14px;color:#30343b;margin:12px 0 18px 0;">
+  Puedes responder este correo con preguntas como <strong>"como resuelvo B-D06"</strong>, <strong>"explicame B-A05"</strong> o copiando una alerta. El agente respondera solo con explicacion operativa y pasos manuales en las apps.
+</div>
+$(New-MayuEmailSection -Title "Alertas" -Html (Render-IssueListCards -Items @($Report.issues | Select-Object -First 80)))
+"@
+  New-MayuEmailLayout -Title "Agente Bodega + Materiales - $($Report.date)" -Subtitle "Trazabilidad, catalogo, compras, recepciones y entregas a fabrica." -ContentHtml $content -Footer "Destinatarios productivos esperados: Felix, Valentina, Carlos y Mauricio. El envio queda controlado por SendEmail."
+}
+
+function Render-FinanzasHtmlV2 {
+  param([object]$Report)
+  $s = $Report.summary
+  $metrics = @(
+    New-MayuEmailMetric -Label "Rojas" -Value $s.rojas -Tone "rojo"
+    New-MayuEmailMetric -Label "Amarillas" -Value $s.amarillas -Tone "amarillo"
+    New-MayuEmailMetric -Label "Informativas" -Value $s.informativas -Tone "info"
+  ) -join ""
+  $actionable = Render-IssueListCards -Items @($Report.issues | Where-Object { $_.severity -in @("rojo", "amarillo") })
+  $context = Render-IssueListCards -Items @($Report.issues | Where-Object { $_.severity -eq "info" })
+  $content = @"
+<table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;margin:0 0 12px 0;"><tr>$metrics</tr></table>
+$(New-MayuEmailSection -Title "Alertas accionables" -Html $actionable)
+$(New-MayuEmailSection -Title "Contexto gerencial" -Html $context)
+<div style="background:#f4f7fb;border-left:4px solid #0078d4;padding:12px 14px;color:#30343b;margin-top:22px;">
+  Responde este correo con el codigo de la alerta, por ejemplo <strong>F-B01</strong>, o copia la linea del problema. El respondedor de Finanzas te dira que hacer en la app para resolverlo.
+</div>
+"@
+  New-MayuEmailLayout -Title "Agente Finanzas MAYU - $($Report.date)" -Subtitle "Caja, CxP, CxC, clasificacion, proyectos y fuentes actualizadas." -ContentHtml $content -Footer "Este agente no corrige datos por correo. Solo reporta inconsistencias que afectan la lectura gerencial."
+}
+
+function Render-HelpReplyCard {
+  param([string]$Intro, [object]$Help, [string]$Code)
+  $steps = (@($Help.steps) | ForEach-Object { "<li>$(HtmlEscape $_)</li>" }) -join ""
+  $codeText = if ($Code) { "<p><strong>Alerta:</strong> $(HtmlEscape $Code)</p>" } else { "" }
+  @"
+<div style="font-family:Arial,sans-serif;color:#202124;font-size:14px;line-height:1.45;border:1px solid #e5e7eb;border-left:4px solid #0078d4;background:#ffffff;padding:14px 16px;">
+  <p style="margin-top:0;">$(HtmlEscape $Intro)</p>
+  $codeText
+  <h3 style="margin:0 0 8px 0;color:#202124;">$(HtmlEscape $Help.title)</h3>
+  <p><strong>Cual es el problema:</strong> $(HtmlEscape $Help.problem)</p>
+  <p><strong>Como resolverlo en la app:</strong></p>
+  <ol>$steps</ol>
+  <p style="font-size:12px;color:#666;margin-bottom:0;">Si necesitas otra alerta, responde con su codigo o copia la linea exacta del correo del agente.</p>
+</div>
+"@
+}
+
+function Render-PulseHtmlV2 {
+  param([object]$Config, [object]$Pulse)
+  $s = $Pulse.summary
+  $links = $Config.sharepoint.links
+  $decisionHtml = if (@($Pulse.decisionesFelixHoy).Count -eq 0) {
+    New-MayuEmptyState -Text "No hay decisiones rojas detectadas con la data disponible."
+  } else {
+    $items = (@($Pulse.decisionesFelixHoy) | ForEach-Object {
+      "<li style='margin:0 0 8px 0;'><strong>$(HtmlEscape $_.owner):</strong> $(HtmlEscape $_.text)</li>"
+    }) -join "`n"
+    "<ol style='margin:0;padding-left:20px;'>$items</ol>"
+  }
+  $metrics = @(
+    New-MayuEmailMetric -Label "Rojos" -Value $s.rojos -Tone "rojo"
+    New-MayuEmailMetric -Label "Amarillos" -Value $s.amarillos -Tone "amarillo"
+    New-MayuEmailMetric -Label "Biblia roja" -Value $s.bibliaRoja -Tone "rojo"
+    New-MayuEmailMetric -Label "Biblia amarilla" -Value $s.bibliaAmarilla -Tone "amarillo"
+  ) -join ""
+  $apps = "Apps: <a href='$($links.control)' style='color:#0b57d0;'>Control</a> &middot; <a href='$($links.materiales)' style='color:#0b57d0;'>Materiales</a> &middot; <a href='$($links.bodega)' style='color:#0b57d0;'>Bodega</a> &middot; <a href='$($links.fabricacion)' style='color:#0b57d0;'>Fabricacion</a> &middot; <a href='$($links.finanzas)' style='color:#0b57d0;'>Finanzas</a> &middot; <a href='$($links.crm)' style='color:#0b57d0;'>CRM</a>"
+  $content = @"
+<table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;margin:0 0 12px 0;"><tr>$metrics</tr></table>
+$(New-MayuEmailSection -Title "Decisiones Felix hoy" -Html $decisionHtml)
+$(New-MayuEmailSection -Title "Riesgos rojos" -Html (Render-IssueListCards -Items @($Pulse.raw.allIssues | Where-Object { $_.severity -eq "rojo" } | Select-Object -First 12)))
+$(New-MayuEmailSection -Title "Amarillos" -Html (Render-IssueListCards -Items @($Pulse.raw.allIssues | Where-Object { $_.severity -eq "amarillo" } | Select-Object -First 12)))
+$(New-MayuEmailSection -Title "Biblia del Proyecto" -Html (Render-IssueListCards -Items @($Pulse.sections.bibliaProyecto)))
+$(New-MayuEmailSection -Title "Traspaso Control -> Operacion" -Html (Render-IssueListCards -Items @($Pulse.sections.traspasoControlOperacion)))
+$(New-MayuEmailSection -Title "Packs" -Html (Render-IssueListCards -Items @($Pulse.sections.packs)))
+$(New-MayuEmailSection -Title "Abastecimiento / Compras" -Html (Render-IssueListCards -Items @($Pulse.sections.abastecimiento)))
+$(New-MayuEmailSection -Title "Finanzas" -Html (Render-IssueListCards -Items @($Pulse.sections.finanzas)))
+$(New-MayuEmailSection -Title "Comercial" -Html (Render-IssueListCards -Items @($Pulse.sections.comercial)))
+$(New-MayuEmailSection -Title "Calidad / RF / Despacho" -Html (Render-IssueListCards -Items @($Pulse.sections.calidadRfDespacho)))
+<p style="margin-top:24px;font-size:12px;color:#777;">$apps</p>
+"@
+  New-MayuEmailLayout -Title "Pulso gerencial MAYU - $($Pulse.date)" -Subtitle "Resumen ejecutivo diario desde ERP MAYU." -ContentHtml $content -Footer "Generado por MAYU Agents. Secciones parciales no inventan datos; solo reportan lo que existe en Firestore."
+}
+
 function Render-PulseHtml {
   param([object]$Config, [object]$Pulse)
+  return Render-PulseHtmlV2 -Config $Config -Pulse $Pulse
   $s = $Pulse.summary
   $links = $Config.sharepoint.links
   $decisionHtml = if (@($Pulse.decisionesFelixHoy).Count -eq 0) {
@@ -2063,7 +2638,7 @@ function Invoke-DailyPulse {
   $data = Get-FirestoreData -Config $Config
   Write-Output "Pulso: construyendo analisis."
   $pulse = Build-Pulse -Config $Config -Data $data -Now $Now
-  $html = Render-PulseHtml -Config $Config -Pulse $pulse
+  $html = Render-PulseHtmlV2 -Config $Config -Pulse $pulse
   $json = $pulse | ConvertTo-Json -Depth 80
   $dateKey = $pulse.date
   Ensure-GraphFolder -Token $GraphToken -SiteId $SiteId -FolderPath $Config.sharepoint.pulso_folder
@@ -2093,7 +2668,7 @@ Write-Output "MAYU Agents iniciado. Modo=$Mode Fecha=$($now.ToString("yyyy-MM-dd
 Ensure-GraphFolder -Token $graphToken -SiteId $siteId -FolderPath $config.sharepoint.base_folder
 
 if ($Mode -eq "test") {
-  $body = "<html><body><p>MAYU Agents operativo.</p><p>Hora MAYU: $($now.ToString("yyyy-MM-dd HH:mm"))</p></body></html>"
+  $body = New-MayuEmailLayout -Title "MAYU Agents operativo" -Subtitle "Prueba de correo del runtime operacional." -ContentHtml "<p>Hora MAYU: $($now.ToString("yyyy-MM-dd HH:mm"))</p>" -Footer "Generado por MAYU Agents."
   if ($SendEmail) {
     Send-GraphMail -Token $graphToken -Sender $config.mail.sender -To @($config.mail.felix) -Cc @() -Subject "Prueba MAYU Agents" -HtmlBody $body
     Write-Output "Prueba enviada a $($config.mail.felix)."
@@ -2110,4 +2685,6 @@ if ($Mode -eq "test") {
   Invoke-Finanzas -Config $config -GraphToken $graphToken -SiteId $siteId -Now $now -DoSendEmail $SendEmail
 } elseif ($Mode -eq "finanzas_respuestas") {
   Invoke-FinanzasResponder -Config $config -GraphToken $graphToken -SiteId $siteId -Now $now
+} elseif ($Mode -eq "bice_cartola_mail") {
+  Invoke-BiceCartolaMail -Config $config -GraphToken $graphToken -SiteId $siteId -Now $now
 }

@@ -8,6 +8,26 @@ Migracion del fiscalizador de reuniones MAYU a **GitHub Actions como runtime dir
 
 PR #1 mergeado a `main`.
 
+## Update local 2026-05-21 - Espejo BICE cartola por correo
+
+Implementado localmente, sin push ni deploy.
+
+- Nuevo modo manual: `bice_cartola_mail`.
+- Lee la bandeja de `notificaciones@imayu.cl` via Microsoft Graph y filtra correos tipo BICE/cartola/cuenta corriente.
+- Descarga adjuntos no inline, guarda crudos en SharePoint bajo `agentes_mayu/bice_cartolas/raw/YYYY-MM-DD/`.
+- Intenta parsear adjuntos `.xlsx`, `.csv`, `.txt` y `.html`.
+- Compara filas legibles contra `fin_mov_bancarios` de Firestore por fecha y monto.
+- Genera reporte JSON/HTML en `agentes_mayu/bice_cartolas/` con candidatos `NUEVO_PROBABLE`, `DUPLICADO_PROBABLE` o `REVISION_DIRECCION`.
+- Modo espejo: no escribe banco, no marca correos como leidos, no reemplaza Clay.
+
+Archivos tocados:
+
+- `runtime/MayuAgents.core.ps1`
+- `.github/workflows/run-mayu-agents.yml`
+- `config/mayu_agents_config.json`
+
+Pendiente antes de produccion: ejecutar manualmente en GitHub Actions cuando llegue una cartola BICE real a `notificaciones@imayu.cl`, revisar el reporte con Felix/Valentina y recien despues decidir si se convierte en importador productivo.
+
 - Commit main: `269f28d`
 - Workflow directo: `.github/workflows/run-fiscalizador.yml`
 - Runtime: `runtime/FiscalizadorReunionesMAYU.core.ps1`
