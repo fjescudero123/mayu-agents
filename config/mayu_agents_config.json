@@ -113,7 +113,8 @@
     "bice_cartola_mail": {
       "enabled": true,
       "send_email_default": false,
-      "mode": "mirror"
+      "mode": "import",
+      "account": "25-00114-1"
     }
   }
 }

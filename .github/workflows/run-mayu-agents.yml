@@ -36,6 +36,8 @@ on:
     - cron: "*/15 13-22 * * 1-5"
     # Lunes a viernes 12:35 UTC (~08:35 Chile horario actual). Agente Finanzas.
     - cron: "35 12 * * 1-5"
+    # Lunes a viernes 15:10 UTC (~11:10 Chile horario actual). Cartola BICE por correo.
+    - cron: "10 15 * * 1-5"
     # Lunes a viernes, respuestas a dudas del correo Finanzas, alternado con Bodega+Materiales.
     - cron: "5,20,35,50 13-22 * * 1-5"
 
@@ -78,6 +80,8 @@ jobs:
               $mode = "bodega_materiales_respuestas"
             } elseif ("${{ github.event.schedule }}" -eq "35 12 * * 1-5") {
               $mode = "finanzas"
+            } elseif ("${{ github.event.schedule }}" -eq "10 15 * * 1-5") {
+              $mode = "bice_cartola_mail"
             } elseif ("${{ github.event.schedule }}" -eq "5,20,35,50 13-22 * * 1-5") {
               $mode = "finanzas_respuestas"
             } else {

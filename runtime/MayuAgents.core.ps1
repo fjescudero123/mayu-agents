@@ -418,6 +418,92 @@ function Get-FirestoreData {
   [pscustomobject]$data
 }
 
+function ConvertTo-FirestoreValue {
+  param([object]$Value)
+  if ($null -eq $Value) { return @{ nullValue = $null } }
+  if ($Value -is [bool]) { return @{ booleanValue = [bool]$Value } }
+  if ($Value -is [int] -or $Value -is [int64] -or $Value -is [long]) { return @{ integerValue = [string]$Value } }
+  if ($Value -is [double] -or $Value -is [decimal] -or $Value -is [float]) {
+    $rounded = [Math]::Round([double]$Value, 0)
+    if ([Math]::Abs(([double]$Value) - $rounded) -lt 0.0001) { return @{ integerValue = [string][int64]$rounded } }
+    return @{ doubleValue = [double]$Value }
+  }
+  if ($Value -is [datetime]) { return @{ timestampValue = ([datetime]$Value).ToUniversalTime().ToString("o") } }
+  if ($Value -is [System.Collections.IDictionary]) {
+    $fields = [ordered]@{}
+    foreach ($key in $Value.Keys) {
+      $fields[[string]$key] = ConvertTo-FirestoreValue $Value[$key]
+    }
+    return @{ mapValue = @{ fields = $fields } }
+  }
+  if ($Value -is [System.Array]) {
+    return @{ arrayValue = @{ values = @($Value | ForEach-Object { ConvertTo-FirestoreValue $_ }) } }
+  }
+  $props = $Value.PSObject.Properties
+  if ($props -and $props.Count -gt 0 -and -not ($Value -is [string])) {
+    $fields = [ordered]@{}
+    foreach ($p in $props) {
+      $fields[$p.Name] = ConvertTo-FirestoreValue $p.Value
+    }
+    return @{ mapValue = @{ fields = $fields } }
+  }
+  @{ stringValue = [string]$Value }
+}
+
+function ConvertTo-FirestoreFields {
+  param([object]$Object)
+  $fields = [ordered]@{}
+  foreach ($p in $Object.PSObject.Properties) {
+    if ($p.Name -eq "id") { continue }
+    if ($null -eq $p.Value) { continue }
+    $fields[$p.Name] = ConvertTo-FirestoreValue $p.Value
+  }
+  $fields
+}
+
+function Set-FirestoreDocument {
+  param(
+    [object]$Config,
+    [string]$Token,
+    [string]$CollectionName,
+    [string]$DocumentId,
+    [object]$Data
+  )
+  $projectId = [string]$Config.firebase.project_id
+  $database = [string]$Config.firebase.database
+  if ([string]::IsNullOrWhiteSpace($database)) { $database = "(default)" }
+  $encodedDb = [Uri]::EscapeDataString($database)
+  $encodedCollection = [Uri]::EscapeDataString($CollectionName)
+  $encodedDoc = [Uri]::EscapeDataString($DocumentId)
+  $uri = "https://firestore.googleapis.com/v1/projects/$projectId/databases/$encodedDb/documents/$encodedCollection/$encodedDoc"
+  $body = @{ fields = (ConvertTo-FirestoreFields -Object $Data) } | ConvertTo-Json -Depth 80
+  Invoke-RestMethod -Method Patch -Uri $uri -Headers @{ Authorization = "Bearer $Token" } -ContentType "application/json" -Body $body -TimeoutSec 45 | Out-Null
+}
+
+function Add-FirestoreDocument {
+  param(
+    [object]$Config,
+    [string]$Token,
+    [string]$CollectionName,
+    [object]$Data
+  )
+  $projectId = [string]$Config.firebase.project_id
+  $database = [string]$Config.firebase.database
+  if ([string]::IsNullOrWhiteSpace($database)) { $database = "(default)" }
+  $encodedDb = [Uri]::EscapeDataString($database)
+  $encodedCollection = [Uri]::EscapeDataString($CollectionName)
+  $uri = "https://firestore.googleapis.com/v1/projects/$projectId/databases/$encodedDb/documents/$encodedCollection"
+  $body = @{ fields = (ConvertTo-FirestoreFields -Object $Data) } | ConvertTo-Json -Depth 80
+  $resp = Invoke-RestMethod -Method Post -Uri $uri -Headers @{ Authorization = "Bearer $Token" } -ContentType "application/json" -Body $body -TimeoutSec 45
+  ([string]$resp.name -split "/")[-1]
+}
+
+function Get-FirestoreWriteToken {
+  param([object]$Config)
+  $apiKey = Get-ConfigApiKey -Config $Config
+  Get-FirebaseIdToken -ApiKey $apiKey
+}
+
 function Get-DocList {
   param([object]$Project, [string]$Area)
   $areaObj = $null
@@ -2075,6 +2161,83 @@ function ConvertFrom-BiceCartolaText {
   @($rows)
 }
 
+function Get-SimpleHash {
+  param([string]$Text)
+  $sha = [System.Security.Cryptography.SHA1]::Create()
+  try {
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes([string]$Text)
+    $hash = $sha.ComputeHash($bytes)
+    return (($hash | ForEach-Object { $_.ToString("x2") }) -join "").Substring(0, 12)
+  } finally {
+    $sha.Dispose()
+  }
+}
+
+function Normalize-BiceDocument {
+  param([object]$Value)
+  $raw = ([string]$Value).Trim()
+  if ([string]::IsNullOrWhiteSpace($raw)) { return "NA" }
+  if ($raw -match "^\d+$") { return ($raw -replace "^0+(?=\d)", "") }
+  $raw
+}
+
+function Get-BiceMovementAmountKey {
+  param([object]$Mov)
+  $cargo = [Math]::Round((Get-Number $Mov.cargo), 0)
+  $abono = [Math]::Round((Get-Number $Mov.abono), 0)
+  if ($cargo -gt 0) { return "C$cargo" }
+  "A$abono"
+}
+
+function Get-BiceImportSignature {
+  param([object]$Mov)
+  $desc = (Normalize-MayuText $Mov.descripcion).ToLowerInvariant()
+  @(
+    [string]$Mov.banco,
+    [string]$Mov.cuenta,
+    [string]$Mov.fecha,
+    (Normalize-BiceDocument $Mov.documento),
+    (Get-BiceMovementAmountKey $Mov),
+    (Get-SimpleHash $desc)
+  ) -join "|"
+}
+
+function Get-BiceMovementDocId {
+  param([object]$Mov)
+  $desc = (Normalize-MayuText $Mov.descripcion).ToLowerInvariant()
+  $base = @(
+    "bice_mail",
+    [string]$Mov.banco,
+    [string]$Mov.cuenta,
+    [string]$Mov.fecha,
+    (Normalize-BiceDocument $Mov.documento),
+    (Get-BiceMovementAmountKey $Mov),
+    (Get-SimpleHash $desc)
+  ) -join "-"
+  $base -replace "[^A-Za-z0-9-]", "_"
+}
+
+function ConvertTo-BiceBankMovement {
+  param([object]$Row, [string]$Account, [long]$NowMs, [string]$SourceFile)
+  [pscustomobject]@{
+    banco = "BICE"
+    cuenta = $Account
+    fecha = [string]$Row.fecha
+    documento = ""
+    descripcion = [string]$Row.descripcion
+    cargo = [Math]::Round((Get-Number $Row.cargo), 0)
+    abono = [Math]::Round((Get-Number $Row.abono), 0)
+    conciliado = $false
+    sourceProvider = "BICE_EMAIL"
+    apiSync = $true
+    biceMailSourceFile = $SourceFile
+    biceMailRaw = [string]$Row.raw
+    updatedAt = $NowMs
+    createdAt = $NowMs
+    createdBy = "system-finanzas"
+  }
+}
+
 function Get-GraphMailboxMessages {
   param([string]$Token, [string]$Mailbox, [int]$Top = 50)
   $uri = "https://graph.microsoft.com/v1.0/users/$Mailbox/mailFolders/inbox/messages?`$top=$Top&`$orderby=receivedDateTime desc&`$select=id,subject,from,bodyPreview,isRead,receivedDateTime,hasAttachments"
@@ -2142,28 +2305,32 @@ function Render-BiceCartolaMailHtml {
   ) -join ""
   $content = @"
 <table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin:0 0 10px 0;"><tr>$metrics</tr></table>
-<p style="margin:0 0 12px 0;color:#4b5563;">Modo espejo: este agente no escribe movimientos bancarios, no marca correos como leidos y no corta Clay. Solo guarda respaldo y compara contra Finanzas.</p>
+<p style="margin:0 0 12px 0;color:#4b5563;">Modo productivo: este agente lee BICE por correo, guarda respaldo, deduplica y crea solo movimientos bancarios nuevos con direccion clara. No marca correos como leidos.</p>
 <h3 style="font-size:16px;margin:18px 0 8px 0;">Correos revisados</h3>
 <table style="border-collapse:collapse;width:100%;font-size:13px;"><tr><th style='border:1px solid #ddd;padding:6px;text-align:left;'>Recibido</th><th style='border:1px solid #ddd;padding:6px;text-align:left;'>De</th><th style='border:1px solid #ddd;padding:6px;text-align:left;'>Asunto</th><th style='border:1px solid #ddd;padding:6px;text-align:right;'>Adj.</th></tr>$messageRows</table>
 <h3 style="font-size:16px;margin:18px 0 8px 0;">Candidatos de cartola</h3>
 <table style="border-collapse:collapse;width:100%;font-size:13px;"><tr><th style='border:1px solid #ddd;padding:6px;text-align:left;'>Fecha</th><th style='border:1px solid #ddd;padding:6px;text-align:left;'>Tipo</th><th style='border:1px solid #ddd;padding:6px;text-align:right;'>Monto</th><th style='border:1px solid #ddd;padding:6px;text-align:left;'>Estado</th><th style='border:1px solid #ddd;padding:6px;text-align:left;'>Descripcion</th></tr>$candidateRows</table>
 "@
-  New-MayuEmailLayout -Title "BICE Cartola Mail" -Subtitle $Report.date -ContentHtml $content -Footer "Modo espejo BICE. No reemplaza Clay hasta validacion humana."
+  New-MayuEmailLayout -Title "BICE Cartola Mail" -Subtitle $Report.date -ContentHtml $content -Footer "Fuente productiva BICE por correo. Los duplicados y filas ambiguas quedan en reporte."
 }
 
 function Invoke-BiceCartolaMail {
   param([object]$Config, [string]$GraphToken, [string]$SiteId, [datetime]$Now)
   $mailbox = [string]$Config.mail.sender
   $folder = [string]$Config.sharepoint.bice_cartolas_folder
+  $account = [string]$Config.agents.bice_cartola_mail.account
+  if ([string]::IsNullOrWhiteSpace($account)) { $account = "25-00114-1" }
   if ([string]::IsNullOrWhiteSpace($folder)) { $folder = "$($Config.sharepoint.base_folder)/bice_cartolas" }
   $dateKey = $Now.ToString("yyyy-MM-dd")
   $runKey = $Now.ToString("yyyyMMdd-HHmmss")
-  Write-Output "BICE cartola mail: leyendo inbox de $mailbox en modo espejo."
+  $nowMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+  Write-Output "BICE cartola mail: leyendo inbox de $mailbox en modo importacion productiva."
   Ensure-GraphFolder -Token $GraphToken -SiteId $SiteId -FolderPath $folder
   Ensure-GraphFolder -Token $GraphToken -SiteId $SiteId -FolderPath "$folder/raw/$dateKey"
 
   $messages = @(Get-GraphMailboxMessages -Token $GraphToken -Mailbox $mailbox -Top 50 | Where-Object { Test-BiceCartolaMessage -Message $_ } | Select-Object -First 10)
   $data = Get-FirestoreData -Config $Config
+  $writeToken = Get-FirestoreWriteToken -Config $Config
   $bankRows = @($data.fin_mov_bancarios)
   $saved = @()
   $parsedRows = @()
@@ -2207,10 +2374,23 @@ function Invoke-BiceCartolaMail {
   }
 
   $candidates = @()
+  $seenInRun = New-Object System.Collections.Generic.HashSet[string]
+  $movementsToCreate = @()
   foreach ($row in @($parsedRows)) {
     $match = Find-BiceExistingBankMatch -Row $row -BankRows $bankRows
     $estado = if ($match) { "DUPLICADO_PROBABLE" } else { "NUEVO_PROBABLE" }
     if ([string]$row.direccion -eq "DESCONOCIDO") { $estado = "REVISION_DIRECCION" }
+    $mov = ConvertTo-BiceBankMovement -Row $row -Account $account -NowMs $nowMs -SourceFile ([string]$row.sourceFile)
+    $signature = Get-BiceImportSignature -Mov $mov
+    if ($estado -eq "NUEVO_PROBABLE") {
+      if ($seenInRun.Contains($signature)) {
+        $estado = "DUPLICADO_EN_ARCHIVOS_BICE"
+      } else {
+        [void]$seenInRun.Add($signature)
+        $docId = Get-BiceMovementDocId -Mov $mov
+        $movementsToCreate += [pscustomobject]@{ id = $docId; data = $mov }
+      }
+    }
     $candidates += [pscustomobject]@{
       fecha = [string]$row.fecha
       descripcion = [string]$row.descripcion
@@ -2220,23 +2400,49 @@ function Invoke-BiceCartolaMail {
       direccion = [string]$row.direccion
       estado = $estado
       firestoreMatchId = if ($match) { [string]$match.id } else { "" }
+      firestoreCreateId = if ($estado -eq "NUEVO_PROBABLE") { [string](Get-BiceMovementDocId -Mov $mov) } else { "" }
       sourceFile = [string]$row.sourceFile
       raw = [string]$row.raw
     }
   }
 
+  $created = 0
+  foreach ($item in @($movementsToCreate)) {
+    Set-FirestoreDocument -Config $Config -Token $writeToken -CollectionName ([string]$Config.collections.fin_mov_bancarios) -DocumentId ([string]$item.id) -Data $item.data
+    $created++
+  }
+  $latestDate = @($parsedRows | ForEach-Object { [string]$_.fecha } | Where-Object { $_ } | Sort-Object | Select-Object -Last 1)
+  $periodo = if ($latestDate.Count -gt 0 -and $latestDate[0] -match "^(\d{4})-(\d{2})-") { "$($Matches[1])-$($Matches[2])" } else { $Now.ToString("yyyy-MM") }
+  $importId = Add-FirestoreDocument -Config $Config -Token $writeToken -CollectionName ([string]$Config.collections.fin_importaciones) -Data ([pscustomobject]@{
+    tipo = "CARTOLA_BICE"
+    periodo = $periodo
+    archivo = "BICE_EMAIL_${dateKey}_${runKey}"
+    filasTotales = @($parsedRows).Count
+    filasCreadas = $created
+    filasActualizadas = 0
+    filasDuplicadas = @($candidates | Where-Object { $_.estado -in @("DUPLICADO_PROBABLE", "DUPLICADO_EN_ARCHIVOS_BICE") }).Count
+    errores = @($candidates | Where-Object { $_.estado -eq "REVISION_DIRECCION" }).Count
+    createdBy = "system-finanzas"
+    createdAt = $nowMs
+    origen = "BICE_EMAIL"
+    cuenta = $account
+  })
+
   $report = [pscustomobject]@{
     generatedAt = $Now.ToString("o")
     date = $dateKey
     mailbox = $mailbox
-    mode = "mirror"
+    mode = "import"
+    importId = $importId
     summary = [pscustomobject]@{
       messagesFound = @($messages).Count
       attachmentsSaved = @($saved | Where-Object { $_.filePath }).Count
       attachmentsWithoutContent = @($saved | Where-Object { $_.status -eq "SIN_CONTENT_BYTES" }).Count
       rowsParsed = @($parsedRows).Count
       newCandidates = @($candidates | Where-Object { $_.estado -eq "NUEVO_PROBABLE" }).Count
+      created = $created
       duplicates = @($candidates | Where-Object { $_.estado -eq "DUPLICADO_PROBABLE" }).Count
+      duplicatedInRun = @($candidates | Where-Object { $_.estado -eq "DUPLICADO_EN_ARCHIVOS_BICE" }).Count
       reviewDirection = @($candidates | Where-Object { $_.estado -eq "REVISION_DIRECCION" }).Count
       firestoreBankRows = @($bankRows).Count
     }
@@ -2244,9 +2450,9 @@ function Invoke-BiceCartolaMail {
     attachments = $saved
     candidates = $candidates
     notes = @(
-      "No escribe fin_mov_bancarios.",
+      "Escribe solo movimientos nuevos con fecha, monto y direccion clara.",
       "No marca correos como leidos.",
-      "No reemplaza Clay hasta validar formato BICE y duplicados con Valentina/Felix."
+      "Deduplica contra movimientos existentes y dentro del mismo lote BICE."
     )
   }
   $html = Render-BiceCartolaMailHtml -Report $report
@@ -2258,8 +2464,8 @@ function Invoke-BiceCartolaMail {
   foreach ($attRow in @($saved)) {
     Write-Output "BICE adjunto: nombre='$($attRow.name)' status=$($attRow.status) filas=$($attRow.rowsParsed) size=$($attRow.size) contentType='$($attRow.contentType)'."
   }
-  Write-Output "BICE cartola mail: correos=$($report.summary.messagesFound) adjuntos=$($report.summary.attachmentsSaved) filas=$($report.summary.rowsParsed) nuevos=$($report.summary.newCandidates) duplicados=$($report.summary.duplicates)."
-  Write-Output "BICE cartola mail: outputs guardados en $folder. No se envio correo y no se modifico banco."
+  Write-Output "BICE cartola mail: correos=$($report.summary.messagesFound) adjuntos=$($report.summary.attachmentsSaved) filas=$($report.summary.rowsParsed) nuevos=$($report.summary.newCandidates) creados=$created duplicados=$($report.summary.duplicates) duplicados_lote=$($report.summary.duplicatedInRun)."
+  Write-Output "BICE cartola mail: importId=$importId outputs guardados en $folder. No se envio correo y no se marcaron correos como leidos."
 }
 
 function Invoke-Finanzas {
