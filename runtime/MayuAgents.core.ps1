@@ -1,5 +1,5 @@
 param(
-  [ValidateSet("morning_reports", "daily_pulse", "bodega_materiales", "bodega_materiales_respuestas", "finanzas", "finanzas_respuestas", "bice_cartola_mail", "test")]
+  [ValidateSet("morning_reports", "daily_pulse", "bodega_materiales", "bodega_materiales_respuestas", "finanzas", "finanzas_dte_inbox", "finanzas_respuestas", "bice_cartola_mail", "test")]
   [string]$Mode = "daily_pulse",
   [string]$Date = "",
   [bool]$SendEmail = $true
@@ -2493,8 +2493,276 @@ function Invoke-Finanzas {
   Write-Output "Finanzas: outputs guardados en SharePoint."
 }
 
+function Get-SafeFileName {
+  param([string]$Name)
+  $safe = ([string]$Name).Trim()
+  if ([string]::IsNullOrWhiteSpace($safe)) { $safe = "archivo" }
+  $safe = $safe -replace '[\\/:*?"<>|#%&{}$!''@+`=]', '_'
+  if ($safe.Length -gt 120) { $safe = $safe.Substring(0, 120) }
+  $safe
+}
+
+function Get-SafeDocId {
+  param([string]$Value)
+  $id = ([string]$Value) -replace '[^A-Za-z0-9_-]', '_'
+  if ([string]::IsNullOrWhiteSpace($id)) { $id = "dte_" + ([guid]::NewGuid().ToString("N")) }
+  if ($id.Length -gt 140) { $id = $id.Substring(0, 140) }
+  $id
+}
+
+function Convert-AttachmentBytesToText {
+  param([byte[]]$Bytes)
+  if ($null -eq $Bytes -or $Bytes.Length -eq 0) { return "" }
+  $headLen = [Math]::Min(300, $Bytes.Length)
+  $head = [System.Text.Encoding]::ASCII.GetString($Bytes, 0, $headLen)
+  if ($head -match 'encoding=["'']ISO-8859-1["'']' -or $head -match 'encoding=["'']Windows-1252["'']') {
+    return [System.Text.Encoding]::GetEncoding("ISO-8859-1").GetString($Bytes)
+  }
+  [System.Text.Encoding]::UTF8.GetString($Bytes)
+}
+
+function Get-XmlSingleText {
+  param([xml]$Xml, [string]$LocalName, [object]$BaseNode = $null)
+  $node = if ($BaseNode) { $BaseNode.SelectSingleNode(".//*[local-name()='$LocalName']") } else { $Xml.SelectSingleNode("//*[local-name()='$LocalName']") }
+  if ($node) { return ([string]$node.InnerText).Trim() }
+  ""
+}
+
+function Parse-DteXmlAttachment {
+  param([string]$XmlText)
+  try {
+    [xml]$xml = $XmlText
+    $refs = @()
+    foreach ($ref in @($xml.SelectNodes("//*[local-name()='Referencia']"))) {
+      $refs += [pscustomobject]@{
+        tipoDoc = Get-XmlSingleText -Xml $xml -LocalName "TpoDocRef" -BaseNode $ref
+        folio = Get-XmlSingleText -Xml $xml -LocalName "FolioRef" -BaseNode $ref
+        razon = Get-XmlSingleText -Xml $xml -LocalName "RazonRef" -BaseNode $ref
+      }
+    }
+
+    $detalles = @()
+    $detalleNodes = @($xml.SelectNodes("//*[local-name()='Detalle']")) | Select-Object -First 20
+    foreach ($det in @($detalleNodes)) {
+      $detalles += [pscustomobject]@{
+        nombre = Get-XmlSingleText -Xml $xml -LocalName "NmbItem" -BaseNode $det
+        cantidad = Get-XmlSingleText -Xml $xml -LocalName "QtyItem" -BaseNode $det
+        monto = Get-XmlSingleText -Xml $xml -LocalName "MontoItem" -BaseNode $det
+      }
+    }
+
+    [pscustomobject]@{
+      ok = $true
+      tipoDte = Get-XmlSingleText -Xml $xml -LocalName "TipoDTE"
+      folio = Get-XmlSingleText -Xml $xml -LocalName "Folio"
+      fechaEmision = Get-XmlSingleText -Xml $xml -LocalName "FchEmis"
+      rutEmisor = Get-XmlSingleText -Xml $xml -LocalName "RUTEmisor"
+      razonSocialEmisor = Get-XmlSingleText -Xml $xml -LocalName "RznSoc"
+      rutReceptor = Get-XmlSingleText -Xml $xml -LocalName "RUTRecep"
+      razonSocialReceptor = Get-XmlSingleText -Xml $xml -LocalName "RznSocRecep"
+      montoNeto = Get-XmlSingleText -Xml $xml -LocalName "MntNeto"
+      montoExento = Get-XmlSingleText -Xml $xml -LocalName "MntExe"
+      iva = Get-XmlSingleText -Xml $xml -LocalName "IVA"
+      montoTotal = Get-XmlSingleText -Xml $xml -LocalName "MntTotal"
+      referencias = $refs
+      detalles = $detalles
+    }
+  } catch {
+    [pscustomobject]@{ ok = $false; error = $_.Exception.Message }
+  }
+}
+
+function Get-OcFolioFromText {
+  param([string]$Text)
+  if ([string]::IsNullOrWhiteSpace($Text)) { return "" }
+  $m = [regex]::Match($Text, 'MAYU-OC-\d{8}-[A-Z0-9]{3,10}', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+  if ($m.Success) { return $m.Value.ToUpperInvariant() }
+  ""
+}
+
+function Get-DteObjectText {
+  param([object]$Item, [string[]]$Names)
+  foreach ($name in @($Names)) {
+    $prop = $Item.PSObject.Properties[$name]
+    if ($prop -and -not [string]::IsNullOrWhiteSpace([string]$prop.Value)) {
+      return [string]$prop.Value
+    }
+  }
+  ""
+}
+
+function Find-MayuOcByFolio {
+  param([object[]]$OcRows, [string]$Folio)
+  if ([string]::IsNullOrWhiteSpace($Folio)) { return $null }
+  $target = $Folio.ToUpperInvariant()
+  foreach ($oc in @($OcRows)) {
+    $candidates = @(
+      (Get-DteObjectText -Item $oc -Names @("folio", "ocFolio", "folioMAYU", "mayuOcFolio")),
+      (Get-DteObjectText -Item $oc -Names @("pdfFileName", "ocFileName"))
+    )
+    foreach ($candidate in @($candidates | Where-Object { $_ })) {
+      if ($candidate.ToUpperInvariant().Contains($target)) { return $oc }
+    }
+  }
+  $null
+}
+
+function Get-FinanzasDteOcRows {
+  param([object]$Config, [string]$Token)
+  $rows = @()
+  $collections = @()
+  if ($Config.collections.mat_oc_headers) { $collections += [string]$Config.collections.mat_oc_headers }
+  if ($Config.collections.mat_ordenes) { $collections += [string]$Config.collections.mat_ordenes }
+  foreach ($collection in @($collections | Select-Object -Unique)) {
+    try {
+      $rows += @(Get-FirestoreCollection -Config $Config -Token $Token -CollectionName $collection)
+    } catch {
+      Write-Output "DTE inbox: no se pudo leer $collection para match de OC ($($_.Exception.Message))."
+    }
+  }
+  @($rows)
+}
+
+function Test-InvoiceEmailCandidate {
+  param([object]$Message, [object[]]$Attachments)
+  $subject = [string]$Message.subject
+  $preview = [string]$Message.bodyPreview
+  $names = (@($Attachments | ForEach-Object { [string]$_.name }) -join " ")
+  $text = "$subject $preview $names"
+  if ($text -match '(?i)\bfactura\b|\bDTE\b|\.xml\b|\.pdf\b|orden de compra|OC MAYU|MAYU-OC') { return $true }
+  $false
+}
+
+function Invoke-FinanzasDteInbox {
+  param([object]$Config, [string]$GraphToken, [string]$SiteId, [datetime]$Now)
+  if ($Config.agents.finanzas_dte_inbox -and $Config.agents.finanzas_dte_inbox.enabled -eq $false) {
+    Write-Output "DTE inbox: deshabilitado por config."
+    return
+  }
+
+  $mailbox = [string]$Config.mail.sender
+  Disable-GraphMailboxAutoReplies -Token $GraphToken -Mailbox $mailbox
+  Write-Output "DTE inbox: leyendo correos no leidos."
+  $messages = @(Get-GraphMailboxMessages -Token $GraphToken -Mailbox $mailbox -Top 50 | Where-Object {
+    $_.isRead -eq $false -and ([string]$_.from.emailAddress.address) -ne $mailbox
+  })
+  if ($messages.Count -eq 0) {
+    Write-Output "DTE inbox: sin correos pendientes."
+    return
+  }
+
+  $apiKey = Get-ConfigApiKey -Config $Config
+  $idToken = Get-FirebaseIdToken -ApiKey $apiKey
+  $ocRows = @(Get-FinanzasDteOcRows -Config $Config -Token $idToken)
+  $dteCollection = if ($Config.collections.fin_dte_inbox) { [string]$Config.collections.fin_dte_inbox } else { "fin_dte_inbox" }
+  $baseFolder = if ($Config.sharepoint.finanzas_dte_inbox_folder) { [string]$Config.sharepoint.finanzas_dte_inbox_folder } else { "agentes_mayu/finanzas/dte_recibidos" }
+  $replyToSender = -not ($Config.agents.finanzas_dte_inbox -and $Config.agents.finanzas_dte_inbox.reply_to_sender -eq $false)
+  $processed = 0
+
+  foreach ($msg in @($messages)) {
+    $attachments = @()
+    if ($msg.hasAttachments) {
+      $attachments = @(Get-GraphMessageAttachments -Token $GraphToken -Mailbox $mailbox -MessageId ([string]$msg.id) | Where-Object { -not $_.isInline })
+    }
+    if (-not (Test-InvoiceEmailCandidate -Message $msg -Attachments $attachments)) { continue }
+
+    $processed++
+    $datePath = $Now.ToString("yyyy/MM/dd")
+    $docId = Get-SafeDocId -Value ([string]$msg.id)
+    $folder = "$baseFolder/$datePath/$docId"
+    Ensure-GraphFolder -Token $GraphToken -SiteId $SiteId -FolderPath $folder
+
+    $attachmentRows = @()
+    $dteDocs = @()
+    $searchText = "$($msg.subject)`n$($msg.bodyPreview)"
+    $idx = 0
+    foreach ($att in @($attachments)) {
+      $idx++
+      $safeName = "{0:00}-{1}" -f $idx, (Get-SafeFileName -Name ([string]$att.name))
+      $contentType = if ($att.contentType) { [string]$att.contentType } else { "application/octet-stream" }
+      $searchText += "`n$($att.name)"
+      $row = [ordered]@{
+        name = [string]$att.name
+        contentType = $contentType
+        size = [int64]$att.size
+        sharepointPath = "$folder/$safeName"
+        status = "SIN_BYTES"
+      }
+
+      if ($att.contentBytes) {
+        $bytes = [Convert]::FromBase64String([string]$att.contentBytes)
+        Write-BytesFileToGraph -Token $GraphToken -SiteId $SiteId -FilePath "$folder/$safeName" -Bytes $bytes -ContentType $contentType
+        $row.status = "GUARDADO"
+        if (([string]$att.name) -match '\.xml$' -or $contentType -match 'xml') {
+          $xmlText = Convert-AttachmentBytesToText -Bytes $bytes
+          $parsed = Parse-DteXmlAttachment -XmlText $xmlText
+          $dteDocs += $parsed
+          $searchText += "`n$xmlText"
+        }
+      }
+      $attachmentRows += [pscustomobject]$row
+    }
+
+    $ocFolio = Get-OcFolioFromText -Text $searchText
+    $oc = Find-MayuOcByFolio -OcRows $ocRows -Folio $ocFolio
+    $estado = if ($attachmentRows.Count -eq 0) { "SIN_ADJUNTOS" } elseif ($ocFolio -and $oc) { "OC_MATCH" } elseif ($ocFolio) { "OC_NO_ENCONTRADA" } else { "SIN_OC" }
+    $dtePrincipal = @($dteDocs | Where-Object { $_.ok } | Select-Object -First 1)
+
+    $record = [pscustomobject][ordered]@{
+      id = $docId
+      sourceProvider = "MAIL_NOTIFICACIONES"
+      source = $mailbox
+      estado = $estado
+      validacionRcvEstado = "PENDIENTE_RCV"
+      receivedAt = [string]$msg.receivedDateTime
+      processedAt = $Now.ToString("o")
+      from = [string]$msg.from.emailAddress.address
+      fromName = [string]$msg.from.emailAddress.name
+      subject = [string]$msg.subject
+      bodyPreview = [string]$msg.bodyPreview
+      graphMessageId = [string]$msg.id
+      sharepointFolder = $folder
+      attachmentCount = @($attachmentRows).Count
+      attachments = $attachmentRows
+      ocFolio = $ocFolio
+      ocHeaderId = if ($oc) { [string]$oc.id } else { "" }
+      projectId = if ($oc) { Get-DteObjectText -Item $oc -Names @("projectId", "matProjectId", "proyectoId") } else { "" }
+      projectName = if ($oc) { Get-DteObjectText -Item $oc -Names @("projectName", "matProjectName", "proyectoNombre") } else { "" }
+      destinoFinanciero = if ($oc) { Get-DteObjectText -Item $oc -Names @("destinoFinanciero") } else { "" }
+      categoriaContable = if ($oc) { Get-DteObjectText -Item $oc -Names @("categoriaContable") } else { "" }
+      tipoCompra = if ($oc) { Get-DteObjectText -Item $oc -Names @("tipoCompra", "tipoOc") } else { "" }
+      dte = if ($dtePrincipal.Count -gt 0) { $dtePrincipal[0] } else { [pscustomobject]@{} }
+      dtes = $dteDocs
+    }
+
+    $json = $record | ConvertTo-Json -Depth 80
+    Write-TextFileToGraph -Token $GraphToken -SiteId $SiteId -FilePath "$folder/metadata.json" -Text $json -ContentType "application/json; charset=utf-8"
+    Set-FirestoreDocument -Config $Config -Token $idToken -CollectionName $dteCollection -DocumentId $docId -Data $record
+
+    if ($replyToSender) {
+      $comment = if ($estado -eq "OC_MATCH") {
+        "Hola,`n`nRecibimos la factura/adjuntos y quedo registrada con referencia $ocFolio. La validacion tributaria queda pendiente de cruce con RCV/SII antes del pago.`n`nGracias."
+      } elseif ($estado -eq "SIN_OC") {
+        "Hola,`n`nRecibimos la factura/adjuntos, pero no encontramos una referencia de OC MAYU. Para procesarla sin demoras, por favor reenviar o confirmar el folio OC MAYU correspondiente.`n`nGracias."
+      } else {
+        "Hola,`n`nRecibimos la factura/adjuntos y quedo registrada para revision de Finanzas. Si corresponde, por favor confirmar el folio OC MAYU asociado.`n`nGracias."
+      }
+      Reply-GraphMail -Token $GraphToken -Mailbox $mailbox -MessageId ([string]$msg.id) -HtmlBody $comment
+    }
+    Set-GraphMailRead -Token $GraphToken -Mailbox $mailbox -MessageId ([string]$msg.id)
+    Write-Output "DTE inbox: procesado $estado / $($msg.subject)."
+  }
+
+  if ($processed -eq 0) {
+    Write-Output "DTE inbox: no habia correos de facturas/DTE."
+  } else {
+    Write-Output "DTE inbox: $processed correo(s) procesado(s)."
+  }
+}
+
 function Invoke-FinanzasResponder {
   param([object]$Config, [string]$GraphToken, [string]$SiteId, [datetime]$Now)
+  Invoke-FinanzasDteInbox -Config $Config -GraphToken $GraphToken -SiteId $SiteId -Now $Now
   $mailbox = [string]$Config.mail.sender
   Disable-GraphMailboxAutoReplies -Token $GraphToken -Mailbox $mailbox
   $stateFile = "$($Config.sharepoint.finanzas_folder)/responder_procesados.json"
@@ -2982,6 +3250,8 @@ if ($Mode -eq "test") {
   Invoke-BodegaMaterialesResponder -Config $config -GraphToken $graphToken -SiteId $siteId -Now $now
 } elseif ($Mode -eq "finanzas") {
   Invoke-Finanzas -Config $config -GraphToken $graphToken -SiteId $siteId -Now $now -DoSendEmail $SendEmail
+} elseif ($Mode -eq "finanzas_dte_inbox") {
+  Invoke-FinanzasDteInbox -Config $config -GraphToken $graphToken -SiteId $siteId -Now $now
 } elseif ($Mode -eq "finanzas_respuestas") {
   Invoke-FinanzasResponder -Config $config -GraphToken $graphToken -SiteId $siteId -Now $now
 } elseif ($Mode -eq "bice_cartola_mail") {

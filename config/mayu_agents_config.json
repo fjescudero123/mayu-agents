@@ -14,6 +14,7 @@
     "traspaso_folder": "agentes_mayu/traspaso_control_operacion",
     "bodega_materiales_folder": "agentes_mayu/bodega_materiales",
     "finanzas_folder": "agentes_mayu/finanzas",
+    "finanzas_dte_inbox_folder": "agentes_mayu/finanzas/dte_recibidos",
     "bice_cartolas_folder": "agentes_mayu/bice_cartolas",
     "minutas_seguimiento_folder": "minutas_archivadas/seguimiento_compromisos",
     "links": {
@@ -40,6 +41,7 @@
     "crm_billing": "billing",
     "mat_projects": "mat_projects",
     "mat_cotizaciones": "mat_cotizaciones",
+    "mat_oc_headers": "mat_oc_headers",
     "mat_ordenes": "mat_ordenes",
     "mat_recepciones": "mat_recepciones",
     "mat_entregas": "mat_entregas",
@@ -59,7 +61,8 @@
     "fin_proveedores": "fin_proveedores",
     "fin_proyectos_cerrados": "fin_proyectos_cerrados",
     "fin_tarjetas_credito": "fin_tarjetas_credito",
-    "fin_importaciones": "fin_importaciones"
+    "fin_importaciones": "fin_importaciones",
+    "fin_dte_inbox": "fin_dte_inbox"
   },
   "doc_requirements": {
     "bom": { "area": "ingenieria", "doc_ids": ["i1"], "owner": "Martin" },
@@ -109,6 +112,10 @@
     },
     "finanzas_respuestas": {
       "enabled": true
+    },
+    "finanzas_dte_inbox": {
+      "enabled": true,
+      "reply_to_sender": true
     },
     "bice_cartola_mail": {
       "enabled": true,
