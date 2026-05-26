@@ -2577,6 +2577,24 @@ function Get-OcFolioFromText {
   if ([string]::IsNullOrWhiteSpace($Text)) { return "" }
   $m = [regex]::Match($Text, 'MAYU-OC-\d{8}-[A-Z0-9]{3,10}', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
   if ($m.Success) { return $m.Value.ToUpperInvariant() }
+  $m = [regex]::Match($Text, '(?i)\b(?:OC|ORDEN\s+DE\s+COMPRA)\s*[:#-]?\s*([0-9]{2,8})\b')
+  if ($m.Success) { return $m.Groups[1].Value }
+  ""
+}
+
+function Get-OcFolioFromDtes {
+  param([object[]]$Dtes)
+  foreach ($dte in @($Dtes)) {
+    foreach ($ref in @($dte.referencias)) {
+      $tipoDoc = [string]$ref.tipoDoc
+      $folio = ([string]$ref.folio).Trim()
+      $razon = [string]$ref.razon
+      if ([string]::IsNullOrWhiteSpace($folio)) { continue }
+      if ($tipoDoc -eq "801" -or $razon -match '(?i)\bOC\b|orden de compra') {
+        return $folio
+      }
+    }
+  }
   ""
 }
 
@@ -2594,14 +2612,18 @@ function Get-DteObjectText {
 function Find-MayuOcByFolio {
   param([object[]]$OcRows, [string]$Folio)
   if ([string]::IsNullOrWhiteSpace($Folio)) { return $null }
-  $target = $Folio.ToUpperInvariant()
+  $target = $Folio.Trim().ToUpperInvariant()
+  $targetLoose = $target -replace '[^A-Z0-9]', ''
   foreach ($oc in @($OcRows)) {
     $candidates = @(
       (Get-DteObjectText -Item $oc -Names @("folio", "ocFolio", "folioMAYU", "mayuOcFolio")),
       (Get-DteObjectText -Item $oc -Names @("pdfFileName", "ocFileName"))
     )
     foreach ($candidate in @($candidates | Where-Object { $_ })) {
-      if ($candidate.ToUpperInvariant().Contains($target)) { return $oc }
+      $candidateText = $candidate.Trim().ToUpperInvariant()
+      $candidateLoose = $candidateText -replace '[^A-Z0-9]', ''
+      if ($candidateText -eq $target -or $candidateLoose -eq $targetLoose) { return $oc }
+      if ($targetLoose.Length -ge 6 -and $candidateLoose.Contains($targetLoose)) { return $oc }
     }
   }
   $null
@@ -2703,7 +2725,10 @@ function Invoke-FinanzasDteInbox {
       $attachmentRows += [pscustomobject]$row
     }
 
-    $ocFolio = Get-OcFolioFromText -Text $searchText
+    $ocFolio = Get-OcFolioFromDtes -Dtes $dteDocs
+    if ([string]::IsNullOrWhiteSpace($ocFolio)) {
+      $ocFolio = Get-OcFolioFromText -Text $searchText
+    }
     $oc = Find-MayuOcByFolio -OcRows $ocRows -Folio $ocFolio
     $estado = if ($attachmentRows.Count -eq 0) { "SIN_ADJUNTOS" } elseif ($ocFolio -and $oc) { "OC_MATCH" } elseif ($ocFolio) { "OC_NO_ENCONTRADA" } else { "SIN_OC" }
     $dtePrincipal = @($dteDocs | Where-Object { $_.ok } | Select-Object -First 1)
@@ -2747,9 +2772,24 @@ function Invoke-FinanzasDteInbox {
       } else {
         "Hola,`n`nRecibimos la factura/adjuntos y quedo registrada para revision de Finanzas. Si corresponde, por favor confirmar el folio OC MAYU asociado.`n`nGracias."
       }
-      Reply-GraphMail -Token $GraphToken -Mailbox $mailbox -MessageId ([string]$msg.id) -HtmlBody $comment
+      try {
+        Reply-GraphMail -Token $GraphToken -Mailbox $mailbox -MessageId ([string]$msg.id) -HtmlBody $comment
+      } catch {
+        $replySubject = if ([string]$msg.subject -match "^(?i)re:") { [string]$msg.subject } else { "RE: $($msg.subject)" }
+        try {
+          $commentHtml = [System.Net.WebUtility]::HtmlEncode($comment) -replace "\r?\n", "<br>"
+          Send-GraphMail -Token $GraphToken -Sender $mailbox -To @([string]$msg.from.emailAddress.address) -Cc @() -Subject $replySubject -HtmlBody $commentHtml
+          Write-Output "DTE inbox: respuesta enviada como correo nuevo porque no se pudo responder en hilo."
+        } catch {
+          Write-Output "DTE inbox: no se pudo enviar respuesta automatica ($($_.Exception.Message))."
+        }
+      }
     }
-    Set-GraphMailRead -Token $GraphToken -Mailbox $mailbox -MessageId ([string]$msg.id)
+    try {
+      Set-GraphMailRead -Token $GraphToken -Mailbox $mailbox -MessageId ([string]$msg.id)
+    } catch {
+      Write-Output "DTE inbox: no se pudo marcar el correo como leido ($($_.Exception.Message))."
+    }
     Write-Output "DTE inbox: procesado $estado / $($msg.subject)."
   }
 
