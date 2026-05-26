@@ -2664,12 +2664,12 @@ function Invoke-FinanzasDteInbox {
 
   $mailbox = [string]$Config.mail.sender
   Disable-GraphMailboxAutoReplies -Token $GraphToken -Mailbox $mailbox
-  Write-Output "DTE inbox: leyendo correos no leidos."
-  $messages = @(Get-GraphMailboxMessages -Token $GraphToken -Mailbox $mailbox -Top 50 | Where-Object {
-    $_.isRead -eq $false -and ([string]$_.from.emailAddress.address) -ne $mailbox
+  Write-Output "DTE inbox: leyendo correos recientes."
+  $rawMessages = @(Get-GraphMailboxMessages -Token $GraphToken -Mailbox $mailbox -Top 50 | Where-Object {
+    ([string]$_.from.emailAddress.address) -ne $mailbox
   })
-  if ($messages.Count -eq 0) {
-    Write-Output "DTE inbox: sin correos pendientes."
+  if ($rawMessages.Count -eq 0) {
+    Write-Output "DTE inbox: sin correos recientes."
     return
   }
 
@@ -2677,6 +2677,22 @@ function Invoke-FinanzasDteInbox {
   $idToken = Get-FirebaseIdToken -ApiKey $apiKey
   $ocRows = @(Get-FinanzasDteOcRows -Config $Config -Token $idToken)
   $dteCollection = if ($Config.collections.fin_dte_inbox) { [string]$Config.collections.fin_dte_inbox } else { "fin_dte_inbox" }
+  $existingDtes = @(Get-FirestoreCollection -Config $Config -Token $idToken -CollectionName $dteCollection)
+  $processedIds = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+  foreach ($item in @($existingDtes)) {
+    if ($item.graphMessageId) { [void]$processedIds.Add([string]$item.graphMessageId) }
+    if ($item.id) { [void]$processedIds.Add([string]$item.id) }
+  }
+  $messages = @($rawMessages | Where-Object {
+    $messageId = [string]$_.id
+    $docId = Get-SafeDocId -Value $messageId
+    $_.isRead -eq $false -or -not ($processedIds.Contains($messageId) -or $processedIds.Contains($docId))
+  })
+  if ($messages.Count -eq 0) {
+    Write-Output "DTE inbox: sin correos pendientes."
+    return
+  }
+
   $baseFolder = if ($Config.sharepoint.finanzas_dte_inbox_folder) { [string]$Config.sharepoint.finanzas_dte_inbox_folder } else { "agentes_mayu/finanzas/dte_recibidos" }
   $replyToSender = -not ($Config.agents.finanzas_dte_inbox -and $Config.agents.finanzas_dte_inbox.reply_to_sender -eq $false)
   $processed = 0
