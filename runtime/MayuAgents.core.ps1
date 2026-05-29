@@ -1,5 +1,5 @@
 param(
-  [ValidateSet("morning_reports", "daily_pulse", "bodega_materiales", "bodega_materiales_respuestas", "finanzas", "finanzas_dte_inbox", "finanzas_respuestas", "bice_cartola_mail", "test")]
+  [ValidateSet("morning_reports", "daily_pulse", "bodega_materiales", "bodega_materiales_respuestas", "finanzas", "finanzas_admin", "finanzas_dte_inbox", "finanzas_respuestas", "bice_cartola_mail", "test")]
   [string]$Mode = "daily_pulse",
   [string]$Date = "",
   [bool]$SendEmail = $true
@@ -1728,6 +1728,225 @@ function Build-FinanzasReport {
   }
 }
 
+function Get-FinanzasAdminSkillDefinition {
+  param([string]$Code)
+  switch -Wildcard ($Code) {
+    "F-B01" {
+      return [pscustomobject]@{
+        key = "FIN-BAN-CARGOS"
+        name = "Destino recurrente de cargos bancarios"
+        condition = "Cargos bancarios repetidos con contraparte/glosa/monto dentro de rango aprobado."
+        action = "Proponer clasificacion y link operacional; ejecutar solo cuando exista regla aprobada por Valentina."
+      }
+    }
+    "F-B02" {
+      return [pscustomobject]@{
+        key = "FIN-BAN-ABONOS"
+        name = "Destino recurrente de abonos bancarios"
+        condition = "Abonos repetidos con cliente, aporte, reembolso o transferencia identificable."
+        action = "Proponer cobranza/aporte/reembolso; ejecutar solo con regla aprobada y evidencia suficiente."
+      }
+    }
+    "F-B03" {
+      return [pscustomobject]@{
+        key = "FIN-BAN-RESPALDOS"
+        name = "Respaldo pendiente por patron operacional"
+        condition = "Movimientos ya explicados operacionalmente, pero con respaldo documental pendiente."
+        action = "Agrupar y pedir una decision por tipo de respaldo; no cerrar contablemente hasta resolver evidencia."
+      }
+    }
+    "F-CXP03" {
+      return [pscustomobject]@{
+        key = "FIN-CXP-DESTINO"
+        name = "Destino CxP por proveedor/proyecto"
+        condition = "Facturas CxP sin destino que calzan con OC, proyecto, OPEX o proveedor recurrente."
+        action = "Proponer proyecto/OPEX/categoria; activar regla solo para casos identicos futuros."
+      }
+    }
+    "F-CXP04" {
+      return [pscustomobject]@{
+        key = "FIN-CXP-CLASIFICACION"
+        name = "Clasificacion CxP recurrente"
+        condition = "Facturas CxP SIN_CLASIFICAR con proveedor, glosa y cuenta repetible."
+        action = "Proponer linea/cuenta/proyecto; ejecutar automaticamente solo despues de aprobacion de skill."
+      }
+    }
+    "F-CXC03" {
+      return [pscustomobject]@{
+        key = "FIN-CXC-PROYECTO"
+        name = "Vinculo CxC con proyecto/CRM"
+        condition = "Facturas CxC sin proyecto donde cliente/folio/negocio identifica un proyecto probable."
+        action = "Proponer vinculo a proyecto; dejar excepcion si hay ambiguedad comercial."
+      }
+    }
+    "F-BHE*" {
+      return [pscustomobject]@{
+        key = "FIN-BHE-CONCILIACION"
+        name = "Conciliacion de boletas de honorarios"
+        condition = "BHE con folio, prestador y monto liquido que calzan contra banco."
+        action = "Proponer match seguro; evitar duplicar como AP normal."
+      }
+    }
+    "F-DTE*" {
+      return [pscustomobject]@{
+        key = "FIN-DTE-RESPALDO"
+        name = "Respaldo tributario DTE/RCV"
+        condition = "Documento operativo cargado, pero pendiente de cruce DTE/RCV."
+        action = "Mantener como gestion hasta validar respaldo tributario; no usar como cierre."
+      }
+    }
+    default { return $null }
+  }
+}
+
+function New-FinanzasAdminTask {
+  param([object]$Issue, [int]$Index)
+  $code = [string]$Issue.code
+  $skill = Get-FinanzasAdminSkillDefinition -Code $code
+  $needsValentina = ([string]$Issue.owner -match "Valentina") -or ($code -like "F-CXP*") -or ($code -like "F-CXC*") -or ($code -like "F-B*") -or ($code -like "F-DTE*")
+  $sensitive = ($code -like "F-CXP01" -or $code -like "F-CXP02" -or $code -like "F-CXC01" -or $code -like "F-CXC02" -or $code -like "F-AUTO*" -or $code -like "F-CONF*")
+  $mode = if ($sensitive) { "preguntar_aprobacion" } elseif ($null -ne $skill) { "proponer_skill" } else { "preparar_tarea" }
+  $question = if ($needsValentina) {
+    "Valentina, confirmame criterio para '$($Issue.title)'. Propongo: $($Issue.action)"
+  } else {
+    "Preparar resolucion operativa y dejar evidencia antes de pedir aprobacion."
+  }
+  [pscustomobject][ordered]@{
+    id = ("FIN-ADMIN-{0:000}" -f $Index)
+    code = $code
+    severity = [string]$Issue.severity
+    area = [string]$Issue.area
+    title = [string]$Issue.title
+    detail = [string]$Issue.detail
+    action = [string]$Issue.action
+    owner = if ($needsValentina) { "Valentina" } else { [string]$Issue.owner }
+    ref = [string]$Issue.ref
+    mode = $mode
+    needsValentina = [bool]$needsValentina
+    canAutoExecuteNow = $false
+    safetyReason = "Piloto Nivel 1: no modifica pagos, cierres, impuestos, deuda, caja ni datos financieros sin regla aprobada."
+    question = $question
+    skillCandidate = [bool]($null -ne $skill)
+    skillKey = if ($skill) { [string]$skill.key } else { "" }
+    skillName = if ($skill) { [string]$skill.name } else { "" }
+  }
+}
+
+function Build-FinanzasAdminReport {
+  param([object]$Config, [object]$FinanceReport, [datetime]$Now)
+  $queue = @()
+  $idx = 0
+  foreach ($issue in @($FinanceReport.issues | Where-Object { $_.severity -in @("rojo", "amarillo") })) {
+    $idx++
+    $queue += New-FinanzasAdminTask -Issue $issue -Index $idx
+  }
+
+  $questions = @($queue | Where-Object { $_.needsValentina } | Select-Object -First 12)
+  $skillCandidates = @()
+  foreach ($group in @($queue | Where-Object { $_.skillCandidate -and $_.skillKey } | Group-Object skillKey)) {
+    $first = @($group.Group | Select-Object -First 1)[0]
+    $def = Get-FinanzasAdminSkillDefinition -Code ([string]$first.code)
+    if ($null -eq $def) { continue }
+    $skillCandidates += [pscustomobject][ordered]@{
+      id = [string]$def.key
+      name = [string]$def.name
+      cases = @($group.Group).Count
+      condition = [string]$def.condition
+      proposedAction = [string]$def.action
+      activation = "Requiere aprobacion explicita de Valentina: Activar skill desde ahora."
+      scope = "Solo casos futuros; backlog historico requiere aprobacion por lote."
+      examples = @($group.Group | Select-Object -First 3 | ForEach-Object { "$($_.code) - $($_.title)" })
+    }
+  }
+
+  [pscustomobject][ordered]@{
+    generatedAt = $Now.ToString("o")
+    date = $Now.ToString("yyyy-MM-dd")
+    stage = "piloto_productivo_nivel_1"
+    mandate = "Administrar operativamente Finanzas: ordenar pendientes, proponer resoluciones, preguntar solo cuando falte criterio y convertir respuestas repetidas en skills aprobables."
+    safety = "Si no es 100% seguro, no ejecuta; pregunta. En Nivel 1 no autoejecuta cambios financieros sensibles."
+    summary = [pscustomobject][ordered]@{
+      pendientes = @($queue).Count
+      preguntasValentina = @($questions).Count
+      skillsCandidatas = @($skillCandidates).Count
+      autoejecutadas = 0
+      rojas = @($queue | Where-Object { $_.severity -eq "rojo" }).Count
+      amarillas = @($queue | Where-Object { $_.severity -eq "amarillo" }).Count
+    }
+    queue = $queue
+    questions = $questions
+    skillCandidates = $skillCandidates
+    fiscalizerSummary = $FinanceReport.summary
+  }
+}
+
+function Render-FinanzasAdminHtml {
+  param([object]$Report)
+  $s = $Report.summary
+  $metrics = @(
+    New-MayuEmailMetric -Label "Pendientes" -Value $s.pendientes -Tone "amarillo"
+    New-MayuEmailMetric -Label "Preguntas" -Value $s.preguntasValentina -Tone "rojo"
+    New-MayuEmailMetric -Label "Skills candidatas" -Value $s.skillsCandidatas -Tone "info"
+    New-MayuEmailMetric -Label "Autoejecutadas" -Value $s.autoejecutadas -Tone "verde"
+  ) -join ""
+
+  $skillCards = @($Report.skillCandidates | ForEach-Object {
+    [pscustomobject]@{
+      severity = "info"
+      area = "Skill candidata"
+      code = $_.id
+      title = $_.name
+      detail = "Casos detectados: $($_.cases). Condicion: $($_.condition)"
+      action = "$($_.proposedAction) Activacion: $($_.activation)"
+      owner = "Valentina"
+      ref = $_.scope
+    }
+  })
+  $skillsHtml = if ($skillCards.Count -eq 0) { New-MayuEmptyState -Text "Sin skills candidatas nuevas en esta corrida." } else { Render-IssueListCards -Items $skillCards }
+  $questionsHtml = Render-IssueListCards -Items @($Report.questions)
+  $queueHtml = Render-IssueListCards -Items @($Report.queue | Select-Object -First 40)
+
+  $content = @"
+<table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;margin:0 0 12px 0;"><tr>$metrics</tr></table>
+<div style="background:#f4f7fb;border-left:4px solid #0078d4;padding:12px 14px;color:#30343b;margin:12px 0 18px 0;">
+  El Administrador Finanzas esta activo como piloto Nivel 1. Ordena pendientes, propone resoluciones y detecta skills, pero no ejecuta pagos, cierres, impuestos, cambios de deuda/caja ni reglas nuevas sin aprobacion de Valentina.
+</div>
+$(New-MayuEmailSection -Title "Preguntas para Valentina" -Html $questionsHtml)
+$(New-MayuEmailSection -Title "Skills candidatas" -Html $skillsHtml)
+$(New-MayuEmailSection -Title "Cola operativa" -Html $queueHtml)
+"@
+  New-MayuEmailLayout -Title "Administrador Finanzas MAYU - $($Report.date)" -Subtitle "Piloto productivo Nivel 1: autonomia progresiva con aprobacion de reglas." -ContentHtml $content -Footer "El fiscalizador sigue separado: el administrador ordena y propone; el fiscalizador valida confiabilidad."
+}
+
+function Invoke-FinanzasAdmin {
+  param([object]$Config, [string]$GraphToken, [string]$SiteId, [datetime]$Now, [bool]$DoSendEmail)
+  if ($Config.agents.finanzas_admin -and $Config.agents.finanzas_admin.enabled -eq $false) {
+    Write-Output "Administrador Finanzas: deshabilitado por config."
+    return
+  }
+  Write-Output "Administrador Finanzas: leyendo Firestore."
+  $data = Get-FirestoreData -Config $Config
+  $financeReport = Build-FinanzasReport -Config $Config -Data $data -Now $Now
+  $report = Build-FinanzasAdminReport -Config $Config -FinanceReport $financeReport -Now $Now
+  $folder = if ($Config.sharepoint.finanzas_admin_folder) { [string]$Config.sharepoint.finanzas_admin_folder } else { "agentes_mayu/finanzas/administrador" }
+  $dateKey = $report.date
+  $html = Render-FinanzasAdminHtml -Report $report
+  Ensure-GraphFolder -Token $GraphToken -SiteId $SiteId -FolderPath $folder
+  Write-TextFileToGraph -Token $GraphToken -SiteId $SiteId -FilePath "$folder/$dateKey.json" -Text ($report | ConvertTo-Json -Depth 80) -ContentType "application/json; charset=utf-8"
+  Write-TextFileToGraph -Token $GraphToken -SiteId $SiteId -FilePath "$folder/$dateKey.html" -Text $html -ContentType "text/html; charset=utf-8"
+  Write-Output "Administrador Finanzas: pendientes=$($report.summary.pendientes) preguntas=$($report.summary.preguntasValentina) skills=$($report.summary.skillsCandidatas)."
+  if ($DoSendEmail) {
+    $to = Get-UniqueEmails -Emails @($Config.mail.valentina)
+    $cc = Get-UniqueEmails -Emails @($Config.mail.felix)
+    $subject = "[Finanzas Admin] Piloto $dateKey - $($report.summary.pendientes) pendientes, $($report.summary.skillsCandidatas) skills"
+    Send-GraphMail -Token $GraphToken -Sender $Config.mail.sender -To $to -Cc $cc -Subject $subject -HtmlBody $html
+    Write-Output "Administrador Finanzas: correo enviado a $($to -join ', ')."
+  } else {
+    Write-Output "Administrador Finanzas: SendEmail=false, no se envia correo."
+  }
+  Write-Output "Administrador Finanzas: outputs guardados en SharePoint."
+}
+
 function Render-FinanzasHtml {
   param([object]$Report)
   return Render-FinanzasHtmlV2 -Report $Report
@@ -3294,10 +3513,11 @@ if ($Mode -eq "test") {
     Write-Output "Prueba OK sin correo."
   }
 } elseif ($Mode -eq "morning_reports") {
-  Write-Output "Reportes manana: Pulso + Bodega/Materiales + Finanzas."
+  Write-Output "Reportes manana: Pulso + Bodega/Materiales + Finanzas + Administrador Finanzas."
   Invoke-DailyPulse -Config $config -GraphToken $graphToken -SiteId $siteId -Now $now -DoSendEmail $SendEmail
   Invoke-BodegaMateriales -Config $config -GraphToken $graphToken -SiteId $siteId -Now $now -DoSendEmail $SendEmail
   Invoke-Finanzas -Config $config -GraphToken $graphToken -SiteId $siteId -Now $now -DoSendEmail $SendEmail
+  Invoke-FinanzasAdmin -Config $config -GraphToken $graphToken -SiteId $siteId -Now $now -DoSendEmail $SendEmail
 } elseif ($Mode -eq "daily_pulse") {
   Invoke-DailyPulse -Config $config -GraphToken $graphToken -SiteId $siteId -Now $now -DoSendEmail $SendEmail
 } elseif ($Mode -eq "bodega_materiales") {
@@ -3306,6 +3526,8 @@ if ($Mode -eq "test") {
   Invoke-BodegaMaterialesResponder -Config $config -GraphToken $graphToken -SiteId $siteId -Now $now
 } elseif ($Mode -eq "finanzas") {
   Invoke-Finanzas -Config $config -GraphToken $graphToken -SiteId $siteId -Now $now -DoSendEmail $SendEmail
+} elseif ($Mode -eq "finanzas_admin") {
+  Invoke-FinanzasAdmin -Config $config -GraphToken $graphToken -SiteId $siteId -Now $now -DoSendEmail $SendEmail
 } elseif ($Mode -eq "finanzas_dte_inbox") {
   Invoke-FinanzasDteInbox -Config $config -GraphToken $graphToken -SiteId $siteId -Now $now
 } elseif ($Mode -eq "finanzas_respuestas") {

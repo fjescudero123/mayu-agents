@@ -14,6 +14,7 @@
     "traspaso_folder": "agentes_mayu/traspaso_control_operacion",
     "bodega_materiales_folder": "agentes_mayu/bodega_materiales",
     "finanzas_folder": "agentes_mayu/finanzas",
+    "finanzas_admin_folder": "agentes_mayu/finanzas/administrador",
     "finanzas_dte_inbox_folder": "agentes_mayu/finanzas/dte_recibidos",
     "bice_cartolas_folder": "agentes_mayu/bice_cartolas",
     "minutas_seguimiento_folder": "minutas_archivadas/seguimiento_compromisos",
@@ -109,6 +110,11 @@
     "finanzas": {
       "enabled": true,
       "send_email_default": true
+    },
+    "finanzas_admin": {
+      "enabled": true,
+      "send_email_default": true,
+      "stage": "piloto_nivel_1"
     },
     "finanzas_respuestas": {
       "enabled": true

@@ -14,6 +14,7 @@ on:
           - bodega_materiales
           - bodega_materiales_respuestas
           - finanzas
+          - finanzas_admin
           - finanzas_dte_inbox
           - finanzas_respuestas
           - bice_cartola_mail
