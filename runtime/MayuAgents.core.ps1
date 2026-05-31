@@ -1864,7 +1864,7 @@ function Invoke-BodegaMaterialesAdmin {
   Write-Output "Administrador Bodega+Materiales: casos=$($report.summary.casosIndividuales) guardados=$savedCases preguntas=$($report.summary.preguntasPendientes) skills=$($report.summary.skillsCandidatas) autoejecutadas=0."
   $realEmailAllowed = ($Config.agents.bodega_materiales_admin -and $Config.agents.bodega_materiales_admin.allow_real_email -eq $true)
   if ($DoSendEmail -and $realEmailAllowed) {
-    $to = Get-UniqueEmails -Emails @($Config.mail.carlos, $Config.mail.mauricio, $Config.mail.valentina)
+    $to = Get-UniqueEmails -Emails @($Config.mail.carlos, $Config.mail.valentina)
     $cc = Get-UniqueEmails -Emails @($Config.mail.felix)
     $subject = "[Bodega-Materiales Admin] Piloto $dateKey - $($report.summary.casosIndividuales) casos, $($report.summary.skillsCandidatas) skills"
     Send-GraphMail -Token $GraphToken -Sender $Config.mail.sender -To $to -Cc $cc -Subject $subject -HtmlBody $html
