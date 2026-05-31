@@ -1914,8 +1914,10 @@ function New-FinanzasAdminCase {
   $decision = if ($Existing -and $Existing.decision) { [string]$Existing.decision } else { "" }
   $decidedBy = if ($Existing -and $Existing.decidedBy) { [string]$Existing.decidedBy } else { "" }
   $decidedAt = if ($Existing -and $Existing.decidedAt) { [string]$Existing.decidedAt } else { "" }
+  $mailCode = if ($Existing -and $Existing.mailCode) { [string]$Existing.mailCode } else { "ADM-" + (Get-StableShortCode -Value $Id) }
   [pscustomobject][ordered]@{
     id = $Id
+    mailCode = $mailCode
     generatedAt = $Now.ToString("o")
     date = $Now.ToString("yyyy-MM-dd")
     status = $status
@@ -1942,6 +1944,18 @@ function New-FinanzasAdminCase {
     canAutoExecuteNow = $false
     safetyReason = "Nivel 2 sin Valentina: propuesta individual en modo sombra; no modifica datos financieros."
     nextStep = "Valentina debe aprobar, corregir o rechazar. La respuesta alimenta skills candidatas."
+  }
+}
+
+function Get-StableShortCode {
+  param([string]$Value)
+  $bytes = [System.Text.Encoding]::UTF8.GetBytes([string]$Value)
+  $sha = [System.Security.Cryptography.SHA1]::Create()
+  try {
+    $hash = $sha.ComputeHash($bytes)
+    (($hash | Select-Object -First 4 | ForEach-Object { $_.ToString("x2") }) -join "").ToUpperInvariant()
+  } finally {
+    $sha.Dispose()
   }
 }
 
@@ -2098,7 +2112,7 @@ function Render-FinanzasAdminHtml {
     [pscustomobject]@{
       severity = $_.severity
       area = $_.domain
-      code = $_.code
+      code = if ($_.mailCode) { "$($_.mailCode) / $($_.code)" } else { $_.code }
       title = $_.title
       detail = "$($_.sourceLabel) - $($_.detail)"
       action = $_.question
@@ -2110,7 +2124,7 @@ function Render-FinanzasAdminHtml {
     [pscustomobject]@{
       severity = $_.severity
       area = "$($_.domain) / $($_.confidence)"
-      code = $_.code
+      code = if ($_.mailCode) { "$($_.mailCode) / $($_.code)" } else { $_.code }
       title = $_.title
       detail = "$($_.sourceLabel) - $($_.detail) - Monto: $(Format-Clp (Get-Number $_.amount))"
       action = "$($_.proposedAction) Estado: $($_.status)."
@@ -2127,6 +2141,8 @@ function Render-FinanzasAdminHtml {
 <table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;margin:0 0 12px 0;"><tr>$metrics</tr></table>
 <div style="background:#f4f7fb;border-left:4px solid #0078d4;padding:12px 14px;color:#30343b;margin:12px 0 18px 0;">
   El Administrador Finanzas esta activo como piloto Nivel 2. Baja alertas agrupadas a casos individuales y trabaja en modo sombra: propone, persiste bandeja y aprende patrones candidatos, pero no modifica datos financieros sin aprobacion.
+  <br><br>
+  Para responder por correo, usa una linea por caso: <strong>ADM-XXXXXX: aprobar</strong>, <strong>ADM-XXXXXX: corregir: [criterio]</strong>, <strong>ADM-XXXXXX: bloquear</strong> o <strong>ADM-XXXXXX: rechazar</strong>.
 </div>
 $(New-MayuEmailSection -Title "Preguntas para Valentina" -Html $questionsHtml)
 $(New-MayuEmailSection -Title "Casos individuales modo sombra" -Html $casesHtml)
@@ -3267,6 +3283,102 @@ function Invoke-FinanzasDteInbox {
   }
 }
 
+function Resolve-FinanzasAdminReplyDecision {
+  param([string]$Text)
+  $clean = ([string]$Text).ToLowerInvariant()
+  if ($clean -match "\b(aprobar|aprobado|apruebo|ok|confirmo|vale)\b") {
+    return [pscustomobject]@{ status = "APROBADO"; label = "aprobado"; requiresDetail = $false }
+  }
+  if ($clean -match "\b(bloquear|bloqueado|bloquea|pausar|pausado)\b") {
+    return [pscustomobject]@{ status = "BLOQUEADO"; label = "bloqueado"; requiresDetail = $false }
+  }
+  if ($clean -match "\b(rechazar|rechazado|rechazo|descartar|no corresponde)\b") {
+    return [pscustomobject]@{ status = "RECHAZADO"; label = "rechazado"; requiresDetail = $false }
+  }
+  if ($clean -match "\b(corregir|corregido|correccion|correcciÃ³n|clasificar como|debe ser|es )\b") {
+    return [pscustomobject]@{ status = "CORREGIDO"; label = "corregido"; requiresDetail = $true }
+  }
+  $null
+}
+
+function Get-FinanzasAdminReplyMatches {
+  param([object[]]$Cases, [string]$Text)
+  $matches = @()
+  foreach ($case in @($Cases)) {
+    $mailCode = [string]$case.mailCode
+    $id = [string]$case.id
+    if ((-not [string]::IsNullOrWhiteSpace($mailCode) -and $Text -match [regex]::Escape($mailCode)) -or
+        (-not [string]::IsNullOrWhiteSpace($id) -and $Text -match [regex]::Escape($id))) {
+      $matches += $case
+    }
+  }
+  @($matches)
+}
+
+function Try-ProcessFinanzasAdminReply {
+  param(
+    [object]$Config,
+    [string]$GraphToken,
+    [object]$Message,
+    [object[]]$Cases,
+    [datetime]$Now
+  )
+  $mailbox = [string]$Config.mail.sender
+  $from = [string]$Message.from.emailAddress.address
+  if ($from -ne [string]$Config.mail.valentina -and $from -ne [string]$Config.mail.felix) { return $false }
+  $subject = [string]$Message.subject
+  $text = "$subject`n$($Message.bodyPreview)"
+  if ($text -notmatch "(?i)ADM-[A-F0-9]{8}|bank-|ap-|ar-") { return $false }
+  $matches = @(Get-FinanzasAdminReplyMatches -Cases $Cases -Text $text)
+  if ($matches.Count -eq 0) { return $false }
+
+  $decision = Resolve-FinanzasAdminReplyDecision -Text $text
+  $replySubject = if ($subject -match "^(?i)re:") { $subject } else { "RE: $subject" }
+  if ($null -eq $decision) {
+    $hint = @"
+<div style="font-family:Arial,sans-serif;font-size:14px;color:#202124;line-height:1.45;">
+  <p>Recibi la referencia al caso, pero no pude interpretar la decision.</p>
+  <p>Por favor responde con este formato:</p>
+  <ul>
+    <li><strong>ADM-XXXXXX: aprobar</strong></li>
+    <li><strong>ADM-XXXXXX: corregir: [criterio]</strong></li>
+    <li><strong>ADM-XXXXXX: bloquear</strong></li>
+    <li><strong>ADM-XXXXXX: rechazar</strong></li>
+  </ul>
+  <p>No ejecutare cambios financieros solo con esta respuesta; primero registro el criterio.</p>
+</div>
+"@
+    Send-GraphMail -Token $GraphToken -Sender $mailbox -To @($from) -Cc @() -Subject $replySubject -HtmlBody $hint
+    return $true
+  }
+
+  $writeToken = Get-FirestoreWriteToken -Config $Config
+  $collection = if ($Config.collections.fin_admin_cases) { [string]$Config.collections.fin_admin_cases } else { "fin_admin_cases" }
+  $updated = @()
+  foreach ($case in @($matches)) {
+    $case | Add-Member -NotePropertyName status -NotePropertyValue ([string]$decision.status) -Force
+    $case | Add-Member -NotePropertyName decision -NotePropertyValue ([string]$Message.bodyPreview) -Force
+    $case | Add-Member -NotePropertyName decidedBy -NotePropertyValue $from -Force
+    $case | Add-Member -NotePropertyName decidedAt -NotePropertyValue ($Now.ToString("o")) -Force
+    $case | Add-Member -NotePropertyName decisionSource -NotePropertyValue "email" -Force
+    $case | Add-Member -NotePropertyName replyMessageId -NotePropertyValue ([string]$Message.id) -Force
+    Set-FirestoreDocument -Config $Config -Token $writeToken -CollectionName $collection -DocumentId ([string]$case.id) -Data $case
+    $updated += "$($case.mailCode) / $($case.title)"
+  }
+
+  $items = ($updated | ForEach-Object { "<li>$(HtmlEscape $_)</li>" }) -join ""
+  $html = @"
+<div style="font-family:Arial,sans-serif;font-size:14px;color:#202124;line-height:1.45;">
+  <p>Registrado: decision <strong>$([System.Net.WebUtility]::HtmlEncode($decision.label))</strong>.</p>
+  <ul>$items</ul>
+  <p>Esto queda como aprendizaje/criterio del Administrador Finanzas. En este nivel no ejecuto cambios en caja, pagos, impuestos, cierres ni datos financieros sensibles por correo.</p>
+</div>
+"@
+  $cc = Get-UniqueEmails -Emails @($Config.mail.felix) -Exclude @($from, $mailbox)
+  Send-GraphMail -Token $GraphToken -Sender $mailbox -To @($from) -Cc $cc -Subject $replySubject -HtmlBody $html
+  $true
+}
+
 function Invoke-FinanzasResponder {
   param([object]$Config, [string]$GraphToken, [string]$SiteId, [datetime]$Now)
   Invoke-FinanzasDteInbox -Config $Config -GraphToken $GraphToken -SiteId $SiteId -Now $Now
@@ -3284,6 +3396,9 @@ function Invoke-FinanzasResponder {
 
   $uri = "https://graph.microsoft.com/v1.0/users/$mailbox/mailFolders/inbox/messages?`$top=25&`$orderby=receivedDateTime desc&`$select=id,subject,from,bodyPreview,body,isRead,receivedDateTime"
   $messages = @((Invoke-GraphGet -Token $GraphToken -Uri $uri).value)
+  $adminCollection = if ($Config.collections.fin_admin_cases) { [string]$Config.collections.fin_admin_cases } else { "fin_admin_cases" }
+  $adminReadToken = Get-FirestoreWriteToken -Config $Config
+  $adminCases = @(Get-FirestoreCollection -Config $Config -Token $adminReadToken -CollectionName $adminCollection)
   $processed = 0
   foreach ($msg in @($messages | Where-Object { $_.isRead -eq $false })) {
     $messageId = [string]$msg.id
@@ -3292,6 +3407,13 @@ function Invoke-FinanzasResponder {
     if ($from -eq $mailbox) { continue }
     $subject = [string]$msg.subject
     $bodyText = "$subject`n$($msg.bodyPreview)`n$($msg.body.content)"
+    if (Try-ProcessFinanzasAdminReply -Config $Config -GraphToken $GraphToken -Message $msg -Cases $adminCases -Now $Now) {
+      Set-GraphMailRead -Token $GraphToken -Mailbox $mailbox -MessageId $messageId
+      [void]$processedSet.Add($messageId)
+      $processed++
+      Write-Output "Finanzas responder: decision Administrador Finanzas registrada desde correo."
+      continue
+    }
     if ($bodyText -notmatch "(?i)Finanzas|F-(D0|B0|CXP|CXC|OC)|cartola|RCV|CxP|CxC|banco|concili") { continue }
     if ($bodyText -notmatch "(?i)como|c.mo|resolver|resuelvo|explica|explicame|problema|que significa|qu. significa|ayuda|hacer") { continue }
 
