@@ -1832,8 +1832,195 @@ function New-FinanzasAdminTask {
   }
 }
 
+function Get-FinanzasAdminText {
+  param([object]$Item, [string[]]$Names, [string]$Default = "")
+  if ($null -eq $Item) { return $Default }
+  foreach ($name in @($Names)) {
+    $prop = $Item.PSObject.Properties[$name]
+    if ($prop -and -not [string]::IsNullOrWhiteSpace([string]$prop.Value)) {
+      return [string]$prop.Value
+    }
+  }
+  $Default
+}
+
+function Test-FinanzasAdminBankExplained {
+  param([object]$Mov)
+  if ($null -eq $Mov) { return $true }
+  if ($Mov.conciliado -or $Mov.pagoId -or $Mov.cobranzaId -or $Mov.linkNomina -or $Mov.linkOperacional) { return $true }
+  if ($Mov.pagoIds -and @($Mov.pagoIds).Count -gt 0) { return $true }
+  if ($Mov.cobranzaIds -and @($Mov.cobranzaIds).Count -gt 0) { return $true }
+  $false
+}
+
+function Get-FinanzasAdminBankSuggestion {
+  param([object]$Mov, [string]$Direction)
+  $desc = (Get-FinanzasAdminText -Item $Mov -Names @("descripcion", "detalle", "glosa", "documento") -Default "").ToLowerInvariant()
+  $amount = if ($Direction -eq "cargo") { Get-Number $Mov.cargo } else { Get-Number $Mov.abono }
+  $kind = if ($Direction -eq "cargo") { "PAGO_PROVEEDOR_O_GASTO" } else { "COBRANZA_CLIENTE_O_APORTE" }
+  $confidence = "baja"
+  $reason = "No hay link a factura, cobranza, nomina ni concepto operacional."
+  if ($Direction -eq "cargo" -and $desc -match "previred|afp|isapre|fonasa|cotiz") {
+    $kind = "NOMINA_PREVIRED"; $confidence = "media"; $reason = "La glosa parece pago previsional/remuneraciones."
+  } elseif ($desc -match "tesoreria|tgr|sii|impuesto|iva") {
+    $kind = "IMPUESTO_SII"; $confidence = "media"; $reason = "La glosa parece impuesto o pago al fisco."
+  } elseif ($Direction -eq "cargo" -and $desc -match "comision|comisión|mantencion|mantención|interes|interés|cargo banco") {
+    $kind = "COMISIONES_O_INTERESES"; $confidence = "media"; $reason = "La glosa parece cargo bancario recurrente."
+  } elseif ($desc -match "traspaso|transferencia interna|cuenta propia") {
+    $kind = "TRANSFERENCIA_INTERNA"; $confidence = "media"; $reason = "La glosa sugiere movimiento entre cuentas."
+  } elseif ($Direction -eq "abono" -and $desc -match "aporte|capital|socio|prestamo|préstamo") {
+    $kind = "APORTE_O_PRESTAMO_RECIBIDO"; $confidence = "media"; $reason = "La glosa parece aporte o prestamo recibido."
+  } elseif ($Direction -eq "abono" -and $desc -match "vale vista|rechazo|devolucion|devolución|reembolso") {
+    $kind = "VALE_VISTA_RECHAZO_O_REEMBOLSO"; $confidence = "media"; $reason = "La glosa parece regularizacion bancaria o devolucion."
+  } elseif ($Direction -eq "abono") {
+    $kind = "COBRANZA_CLIENTE"; $reason = "Es una entrada sin cobranza asociada; primer supuesto a revisar."
+  }
+  [pscustomobject][ordered]@{
+    kind = $kind
+    confidence = $confidence
+    reason = $reason
+    proposedAction = if ($Direction -eq "cargo") {
+      "Revisar si corresponde a CxP, nomina, impuesto, comision, prestamo o transferencia interna antes de usarlo para caja/EERR."
+    } else {
+      "Revisar si corresponde a cobranza cliente, aporte/prestamo, reembolso, vale vista/rechazo o transferencia interna."
+    }
+    amount = $amount
+  }
+}
+
+function New-FinanzasAdminCase {
+  param(
+    [string]$Id,
+    [string]$Code,
+    [string]$Severity,
+    [string]$Domain,
+    [string]$Title,
+    [string]$Detail,
+    [double]$Amount,
+    [string]$SourceCollection,
+    [string]$SourceId,
+    [string]$SourceDate,
+    [string]$SourceLabel,
+    [string]$SuggestionKind,
+    [string]$Confidence,
+    [string]$ProposedAction,
+    [string]$Question,
+    [string]$SkillKey,
+    [string]$SkillName,
+    [datetime]$Now,
+    [object]$Existing = $null
+  )
+  $status = if ($Existing -and $Existing.status) { [string]$Existing.status } else { "PENDIENTE_VALENTINA" }
+  $decision = if ($Existing -and $Existing.decision) { [string]$Existing.decision } else { "" }
+  $decidedBy = if ($Existing -and $Existing.decidedBy) { [string]$Existing.decidedBy } else { "" }
+  $decidedAt = if ($Existing -and $Existing.decidedAt) { [string]$Existing.decidedAt } else { "" }
+  [pscustomobject][ordered]@{
+    id = $Id
+    generatedAt = $Now.ToString("o")
+    date = $Now.ToString("yyyy-MM-dd")
+    status = $status
+    decision = $decision
+    decidedBy = $decidedBy
+    decidedAt = $decidedAt
+    code = $Code
+    severity = $Severity
+    domain = $Domain
+    title = $Title
+    detail = $Detail
+    amount = [Math]::Round($Amount, 0)
+    sourceCollection = $SourceCollection
+    sourceId = $SourceId
+    sourceDate = $SourceDate
+    sourceLabel = $SourceLabel
+    suggestionKind = $SuggestionKind
+    confidence = $Confidence
+    proposedAction = $ProposedAction
+    question = $Question
+    skillKey = $SkillKey
+    skillName = $SkillName
+    mode = "shadow_proposal"
+    canAutoExecuteNow = $false
+    safetyReason = "Nivel 2 sin Valentina: propuesta individual en modo sombra; no modifica datos financieros."
+    nextStep = "Valentina debe aprobar, corregir o rechazar. La respuesta alimenta skills candidatas."
+  }
+}
+
+function Get-FinanzasAdminExistingMap {
+  param([object[]]$Cases)
+  $map = @{}
+  foreach ($case in @($Cases)) {
+    if ($case.id) { $map[[string]$case.id] = $case }
+  }
+  $map
+}
+
+function Get-FinanzasAdminCases {
+  param([object]$Config, [object]$Data, [datetime]$Now)
+  $existing = Get-FinanzasAdminExistingMap -Cases @($Data.fin_admin_cases)
+  $cases = @()
+  foreach ($mov in @($Data.fin_mov_bancarios | Sort-Object fecha -Descending)) {
+    if (Test-FinanzasAdminBankExplained -Mov $mov) { continue }
+    $cargo = Get-Number $mov.cargo
+    $abono = Get-Number $mov.abono
+    if ($cargo -le 0 -and $abono -le 0) { continue }
+    $direction = if ($cargo -gt 0) { "cargo" } else { "abono" }
+    $code = if ($direction -eq "cargo") { "F-B01" } else { "F-B02" }
+    $skill = Get-FinanzasAdminSkillDefinition -Code $code
+    $suggestion = Get-FinanzasAdminBankSuggestion -Mov $mov -Direction $direction
+    $sourceId = Get-FinanzasAdminText -Item $mov -Names @("id", "externalId", "clayId") -Default ([guid]::NewGuid().ToString("N"))
+    $id = "bank-$direction-$sourceId" -replace '[^A-Za-z0-9_-]', '_'
+    $label = "$(Get-FinanzasAdminText -Item $mov -Names @("fecha")) / $(Get-FinanzasAdminText -Item $mov -Names @("descripcion", "documento"))"
+    $title = if ($direction -eq "cargo") { "Cargo bancario sin destino" } else { "Abono bancario sin destino" }
+    $amount = [double]$suggestion.amount
+    $question = "Valentina, este $direction bancario por $(Format-Clp $amount) figura sin destino. Propongo revisarlo como $($suggestion.kind). ¿Lo apruebo para este caso, lo corrijo o lo dejo bloqueado?"
+    $cases += New-FinanzasAdminCase -Id $id -Code $code -Severity "rojo" -Domain "Banco" -Title $title -Detail $suggestion.reason -Amount $amount -SourceCollection ([string]$Config.collections.fin_mov_bancarios) -SourceId $sourceId -SourceDate ([string]$mov.fecha) -SourceLabel $label -SuggestionKind ([string]$suggestion.kind) -Confidence ([string]$suggestion.confidence) -ProposedAction ([string]$suggestion.proposedAction) -Question $question -SkillKey ([string]$skill.key) -SkillName ([string]$skill.name) -Now $Now -Existing $existing[$id]
+  }
+
+  foreach ($f in @($Data.fin_facturas_ap | Sort-Object fechaEmision -Descending)) {
+    $estado = [string]$f.estado
+    if (@("PAGADA", "ANULADA", "RECHAZADA") -contains $estado) { continue }
+    $isNotaCredito = (([int](Get-Number $f.tipoDte)) -eq 61 -or ([int](Get-Number $f.tipoDte)) -eq 112)
+    if ($isNotaCredito) { continue }
+    $sourceId = Get-FinanzasAdminText -Item $f -Names @("id") -Default ([guid]::NewGuid().ToString("N"))
+    $label = "$($f.razonSocialContraparte) folio $($f.folio)"
+    $sinDestino = ((-not $f.proyectoId) -and (-not $f.asignaciones) -and ([string]$f.lineaNegocio) -ne "OPEX_CORP" -and ([string]$f.categoriaContable) -notin @("OPEX_FIJO", "OPEX_VARIABLE"))
+    if ($sinDestino) {
+      $code = "F-CXP03"
+      $skill = Get-FinanzasAdminSkillDefinition -Code $code
+      $id = "ap-destino-$sourceId" -replace '[^A-Za-z0-9_-]', '_'
+      $question = "Valentina, esta CxP de $($f.razonSocialContraparte) por $(Format-Clp (Get-Number $f.montoTotal)) no tiene destino. Propongo clasificarla como proyecto, OPEX o control especial segun respaldo. ¿Cual criterio uso?"
+      $cases += New-FinanzasAdminCase -Id $id -Code $code -Severity "amarillo" -Domain "CxP" -Title "Factura CxP sin destino" -Detail "No tiene proyecto/asignacion ni clasificacion OPEX suficiente." -Amount (Get-Number $f.montoTotal) -SourceCollection ([string]$Config.collections.fin_facturas_ap) -SourceId $sourceId -SourceDate ([string]$f.fechaEmision) -SourceLabel $label -SuggestionKind "CLASIFICAR_DESTINO_CXP" -Confidence "media" -ProposedAction "Asignar proyecto, OPEX, stock/control especial o excepcion documentada." -Question $question -SkillKey ([string]$skill.key) -SkillName ([string]$skill.name) -Now $Now -Existing $existing[$id]
+    }
+    if ([string]$f.lineaNegocio -eq "SIN_CLASIFICAR") {
+      $code = "F-CXP04"
+      $skill = Get-FinanzasAdminSkillDefinition -Code $code
+      $id = "ap-clasificacion-$sourceId" -replace '[^A-Za-z0-9_-]', '_'
+      $question = "Valentina, esta CxP de $($f.razonSocialContraparte) esta SIN_CLASIFICAR. Propongo definir linea/categoria/cuenta y guardar el criterio como candidato de skill si se repite."
+      $cases += New-FinanzasAdminCase -Id $id -Code $code -Severity "amarillo" -Domain "CxP" -Title "Factura CxP sin clasificacion" -Detail "Linea de negocio SIN_CLASIFICAR; EERR de gestion incompleto." -Amount (Get-Number $f.montoTotal) -SourceCollection ([string]$Config.collections.fin_facturas_ap) -SourceId $sourceId -SourceDate ([string]$f.fechaEmision) -SourceLabel $label -SuggestionKind "CLASIFICAR_CXP" -Confidence "media" -ProposedAction "Completar linea, categoria, cuenta y proyecto/OPEX; proponer regla si proveedor/glosa se repite." -Question $question -SkillKey ([string]$skill.key) -SkillName ([string]$skill.name) -Now $Now -Existing $existing[$id]
+    }
+  }
+
+  foreach ($f in @($Data.fin_facturas_ar | Sort-Object fechaEmision -Descending)) {
+    $estado = [string]$f.estado
+    if (@("COBRADA", "ANULADA") -contains $estado) { continue }
+    $isNotaCredito = (([int](Get-Number $f.tipoDte)) -eq 61 -or ([int](Get-Number $f.tipoDte)) -eq 112)
+    if ($isNotaCredito) { continue }
+    $sinProyecto = ((-not $f.crmProjectId) -and (-not $f.proyectoId) -and (-not $f.asignaciones))
+    if (-not $sinProyecto) { continue }
+    $code = "F-CXC03"
+    $skill = Get-FinanzasAdminSkillDefinition -Code $code
+    $sourceId = Get-FinanzasAdminText -Item $f -Names @("id") -Default ([guid]::NewGuid().ToString("N"))
+    $id = "ar-proyecto-$sourceId" -replace '[^A-Za-z0-9_-]', '_'
+    $label = "$($f.razonSocialContraparte) folio $($f.folio)"
+    $question = "Valentina, esta CxC de $($f.razonSocialContraparte) por $(Format-Clp (Get-Number $f.montoTotal)) no tiene proyecto. Propongo vincularla a CRM/proyecto antes de usarla para directorio."
+    $cases += New-FinanzasAdminCase -Id $id -Code $code -Severity "amarillo" -Domain "CxC" -Title "Factura CxC sin proyecto" -Detail "No tiene CRM/projectId/asignaciones; afecta lectura comercial y directorio." -Amount (Get-Number $f.montoTotal) -SourceCollection ([string]$Config.collections.fin_facturas_ar) -SourceId $sourceId -SourceDate ([string]$f.fechaEmision) -SourceLabel $label -SuggestionKind "VINCULAR_CXC_PROYECTO" -Confidence "media" -ProposedAction "Vincular a proyecto/CRM o dejar excepcion comercial documentada." -Question $question -SkillKey ([string]$skill.key) -SkillName ([string]$skill.name) -Now $Now -Existing $existing[$id]
+  }
+
+  @($cases | Sort-Object @{ Expression = { if ($_.severity -eq "rojo") { 0 } else { 1 } } }, @{ Expression = "amount"; Descending = $true })
+}
+
 function Build-FinanzasAdminReport {
-  param([object]$Config, [object]$FinanceReport, [datetime]$Now)
+  param([object]$Config, [object]$Data, [object]$FinanceReport, [datetime]$Now)
   $queue = @()
   $idx = 0
   foreach ($issue in @($FinanceReport.issues | Where-Object { $_.severity -in @("rojo", "amarillo") })) {
@@ -1841,9 +2028,10 @@ function Build-FinanzasAdminReport {
     $queue += New-FinanzasAdminTask -Issue $issue -Index $idx
   }
 
-  $questions = @($queue | Where-Object { $_.needsValentina } | Select-Object -First 12)
+  $cases = @(Get-FinanzasAdminCases -Config $Config -Data $Data -Now $Now)
+  $questions = @($cases | Where-Object { $_.status -eq "PENDIENTE_VALENTINA" } | Select-Object -First 12)
   $skillCandidates = @()
-  foreach ($group in @($queue | Where-Object { $_.skillCandidate -and $_.skillKey } | Group-Object skillKey)) {
+  foreach ($group in @($cases | Where-Object { $_.skillKey } | Group-Object skillKey)) {
     $first = @($group.Group | Select-Object -First 1)[0]
     $def = Get-FinanzasAdminSkillDefinition -Code ([string]$first.code)
     if ($null -eq $def) { continue }
@@ -1855,26 +2043,29 @@ function Build-FinanzasAdminReport {
       proposedAction = [string]$def.action
       activation = "Requiere aprobacion explicita de Valentina: Activar skill desde ahora."
       scope = "Solo casos futuros; backlog historico requiere aprobacion por lote."
-      examples = @($group.Group | Select-Object -First 3 | ForEach-Object { "$($_.code) - $($_.title)" })
+      examples = @($group.Group | Select-Object -First 3 | ForEach-Object { "$($_.code) - $($_.sourceLabel)" })
     }
   }
 
   [pscustomobject][ordered]@{
     generatedAt = $Now.ToString("o")
     date = $Now.ToString("yyyy-MM-dd")
-    stage = "piloto_productivo_nivel_1"
-    mandate = "Administrar operativamente Finanzas: ordenar pendientes, proponer resoluciones, preguntar solo cuando falte criterio y convertir respuestas repetidas en skills aprobables."
-    safety = "Si no es 100% seguro, no ejecuta; pregunta. En Nivel 1 no autoejecuta cambios financieros sensibles."
+    stage = "piloto_productivo_nivel_2"
+    mandate = "Administrar operativamente Finanzas: ordenar pendientes, bajar alertas a casos individuales, proponer resoluciones en modo sombra y convertir respuestas repetidas en skills aprobables."
+    safety = "Si no es 100% seguro, no ejecuta; pregunta. En Nivel 2 propone caso a caso y persiste la bandeja, sin autoejecutar cambios financieros."
     summary = [pscustomobject][ordered]@{
       pendientes = @($queue).Count
       preguntasValentina = @($questions).Count
       skillsCandidatas = @($skillCandidates).Count
       autoejecutadas = 0
+      casosIndividuales = @($cases).Count
+      casosModoSombra = @($cases | Where-Object { $_.mode -eq "shadow_proposal" }).Count
       rojas = @($queue | Where-Object { $_.severity -eq "rojo" }).Count
       amarillas = @($queue | Where-Object { $_.severity -eq "amarillo" }).Count
     }
     queue = $queue
     questions = $questions
+    cases = $cases
     skillCandidates = $skillCandidates
     fiscalizerSummary = $FinanceReport.summary
   }
@@ -1885,6 +2076,7 @@ function Render-FinanzasAdminHtml {
   $s = $Report.summary
   $metrics = @(
     New-MayuEmailMetric -Label "Pendientes" -Value $s.pendientes -Tone "amarillo"
+    New-MayuEmailMetric -Label "Casos detalle" -Value $s.casosIndividuales -Tone "info"
     New-MayuEmailMetric -Label "Preguntas" -Value $s.preguntasValentina -Tone "rojo"
     New-MayuEmailMetric -Label "Skills candidatas" -Value $s.skillsCandidatas -Tone "info"
     New-MayuEmailMetric -Label "Autoejecutadas" -Value $s.autoejecutadas -Tone "verde"
@@ -1902,20 +2094,59 @@ function Render-FinanzasAdminHtml {
       ref = $_.scope
     }
   })
+  $questionCards = @($Report.questions | ForEach-Object {
+    [pscustomobject]@{
+      severity = $_.severity
+      area = $_.domain
+      code = $_.code
+      title = $_.title
+      detail = "$($_.sourceLabel) - $($_.detail)"
+      action = $_.question
+      owner = "Valentina"
+      ref = $_.id
+    }
+  })
+  $caseCards = @($Report.cases | Select-Object -First 40 | ForEach-Object {
+    [pscustomobject]@{
+      severity = $_.severity
+      area = "$($_.domain) / $($_.confidence)"
+      code = $_.code
+      title = $_.title
+      detail = "$($_.sourceLabel) - $($_.detail) - Monto: $(Format-Clp (Get-Number $_.amount))"
+      action = "$($_.proposedAction) Estado: $($_.status)."
+      owner = "Administrador IA"
+      ref = $_.id
+    }
+  })
   $skillsHtml = if ($skillCards.Count -eq 0) { New-MayuEmptyState -Text "Sin skills candidatas nuevas en esta corrida." } else { Render-IssueListCards -Items $skillCards }
-  $questionsHtml = Render-IssueListCards -Items @($Report.questions)
+  $questionsHtml = if ($questionCards.Count -eq 0) { New-MayuEmptyState -Text "Sin preguntas individuales pendientes." } else { Render-IssueListCards -Items $questionCards }
   $queueHtml = Render-IssueListCards -Items @($Report.queue | Select-Object -First 40)
+  $casesHtml = if ($caseCards.Count -eq 0) { New-MayuEmptyState -Text "Sin casos individuales en modo sombra." } else { Render-IssueListCards -Items $caseCards }
 
   $content = @"
 <table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;margin:0 0 12px 0;"><tr>$metrics</tr></table>
 <div style="background:#f4f7fb;border-left:4px solid #0078d4;padding:12px 14px;color:#30343b;margin:12px 0 18px 0;">
-  El Administrador Finanzas esta activo como piloto Nivel 1. Ordena pendientes, propone resoluciones y detecta skills, pero no ejecuta pagos, cierres, impuestos, cambios de deuda/caja ni reglas nuevas sin aprobacion de Valentina.
+  El Administrador Finanzas esta activo como piloto Nivel 2. Baja alertas agrupadas a casos individuales y trabaja en modo sombra: propone, persiste bandeja y aprende patrones candidatos, pero no modifica datos financieros sin aprobacion.
 </div>
 $(New-MayuEmailSection -Title "Preguntas para Valentina" -Html $questionsHtml)
+$(New-MayuEmailSection -Title "Casos individuales modo sombra" -Html $casesHtml)
 $(New-MayuEmailSection -Title "Skills candidatas" -Html $skillsHtml)
 $(New-MayuEmailSection -Title "Cola operativa" -Html $queueHtml)
 "@
-  New-MayuEmailLayout -Title "Administrador Finanzas MAYU - $($Report.date)" -Subtitle "Piloto productivo Nivel 1: autonomia progresiva con aprobacion de reglas." -ContentHtml $content -Footer "El fiscalizador sigue separado: el administrador ordena y propone; el fiscalizador valida confiabilidad."
+  New-MayuEmailLayout -Title "Administrador Finanzas MAYU - $($Report.date)" -Subtitle "Piloto productivo Nivel 2: casos individuales, modo sombra y skills candidatas." -ContentHtml $content -Footer "El fiscalizador sigue separado: el administrador ordena y propone; el fiscalizador valida confiabilidad."
+}
+
+function Save-FinanzasAdminCases {
+  param([object]$Config, [object]$Report)
+  $collection = if ($Config.collections.fin_admin_cases) { [string]$Config.collections.fin_admin_cases } else { "fin_admin_cases" }
+  $token = Get-FirestoreWriteToken -Config $Config
+  $saved = 0
+  foreach ($case in @($Report.cases)) {
+    if ([string]::IsNullOrWhiteSpace([string]$case.id)) { continue }
+    Set-FirestoreDocument -Config $Config -Token $token -CollectionName $collection -DocumentId ([string]$case.id) -Data $case
+    $saved++
+  }
+  $saved
 }
 
 function Invoke-FinanzasAdmin {
@@ -1927,14 +2158,15 @@ function Invoke-FinanzasAdmin {
   Write-Output "Administrador Finanzas: leyendo Firestore."
   $data = Get-FirestoreData -Config $Config
   $financeReport = Build-FinanzasReport -Config $Config -Data $data -Now $Now
-  $report = Build-FinanzasAdminReport -Config $Config -FinanceReport $financeReport -Now $Now
+  $report = Build-FinanzasAdminReport -Config $Config -Data $data -FinanceReport $financeReport -Now $Now
   $folder = if ($Config.sharepoint.finanzas_admin_folder) { [string]$Config.sharepoint.finanzas_admin_folder } else { "agentes_mayu/finanzas/administrador" }
   $dateKey = $report.date
   $html = Render-FinanzasAdminHtml -Report $report
   Ensure-GraphFolder -Token $GraphToken -SiteId $SiteId -FolderPath $folder
   Write-TextFileToGraph -Token $GraphToken -SiteId $SiteId -FilePath "$folder/$dateKey.json" -Text ($report | ConvertTo-Json -Depth 80) -ContentType "application/json; charset=utf-8"
   Write-TextFileToGraph -Token $GraphToken -SiteId $SiteId -FilePath "$folder/$dateKey.html" -Text $html -ContentType "text/html; charset=utf-8"
-  Write-Output "Administrador Finanzas: pendientes=$($report.summary.pendientes) preguntas=$($report.summary.preguntasValentina) skills=$($report.summary.skillsCandidatas)."
+  $savedCases = Save-FinanzasAdminCases -Config $Config -Report $report
+  Write-Output "Administrador Finanzas: pendientes=$($report.summary.pendientes) casos=$($report.summary.casosIndividuales) guardados=$savedCases preguntas=$($report.summary.preguntasValentina) skills=$($report.summary.skillsCandidatas)."
   if ($DoSendEmail) {
     $to = Get-UniqueEmails -Emails @($Config.mail.valentina)
     $cc = Get-UniqueEmails -Emails @($Config.mail.felix)
