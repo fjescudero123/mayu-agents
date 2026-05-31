@@ -112,10 +112,10 @@
     },
     "bodega_materiales_admin": {
       "enabled": true,
-      "send_email_default": false,
-      "stage": "piloto_nivel_2",
-      "shadow_mode": true,
-      "allow_real_email": false
+      "send_email_default": true,
+      "stage": "operativo_nivel_2_asistido",
+      "shadow_mode": false,
+      "allow_real_email": true
     },
     "finanzas": {
       "enabled": true,
