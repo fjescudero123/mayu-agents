@@ -1888,6 +1888,99 @@ function Get-FinanzasAdminBankSuggestion {
   }
 }
 
+function New-FinanzasAdminChoice {
+  param(
+    [string]$Key,
+    [string]$Label,
+    [string]$Value,
+    [string]$Effect,
+    [string]$Outcome = "CRITERIO_REGISTRADO",
+    [bool]$Recommended = $false
+  )
+  [pscustomobject][ordered]@{
+    key = $Key
+    label = $Label
+    value = $Value
+    effect = $Effect
+    outcome = $Outcome
+    recommended = $Recommended
+  }
+}
+
+function Get-FinanzasAdminChoiceSet {
+  param([string]$Code, [string]$SuggestionKind)
+  $choices = @()
+  switch -Wildcard ($Code) {
+    "F-B01" {
+      $defs = @(
+        @("A", "Pago a proveedor / CxP", "PAGO_PROVEEDOR_O_GASTO", "Buscar factura CxP, OC o respaldo operacional y dejar match propuesto."),
+        @("B", "Nomina / Previred", "NOMINA_PREVIRED", "Tratar como remuneraciones o pago previsional; pedir respaldo de nomina si falta."),
+        @("C", "Impuesto SII / TGR", "IMPUESTO_SII", "Tratar como impuesto; pedir respaldo tributario antes de cierre."),
+        @("D", "Comision o interes bancario", "COMISIONES_O_INTERESES", "Clasificar como gasto financiero si la glosa lo confirma."),
+        @("E", "Transferencia interna", "TRANSFERENCIA_INTERNA", "Buscar contraparte bancaria interna y evitar duplicar gasto."),
+        @("F", "Bloquear: no calza ninguna", "BLOQUEAR_REVISION", "Mantener pendiente y pedir revision manual.", "BLOQUEADO")
+      )
+      foreach ($d in $defs) {
+        $choices += New-FinanzasAdminChoice -Key $d[0] -Label $d[1] -Value $d[2] -Effect $d[3] -Outcome $(if ($d.Count -ge 5) { $d[4] } else { "CRITERIO_REGISTRADO" }) -Recommended ([string]$SuggestionKind -eq [string]$d[2])
+      }
+    }
+    "F-B02" {
+      $defs = @(
+        @("A", "Cobranza de cliente / CxC", "COBRANZA_CLIENTE", "Buscar factura CxC o cobranza asociada y dejar match propuesto."),
+        @("B", "Aporte o prestamo recibido", "APORTE_O_PRESTAMO_RECIBIDO", "Tratar como financiamiento/aporte; pedir respaldo si falta."),
+        @("C", "Reembolso o devolucion", "VALE_VISTA_RECHAZO_O_REEMBOLSO", "Tratar como regularizacion bancaria o devolucion."),
+        @("D", "Transferencia interna", "TRANSFERENCIA_INTERNA", "Buscar contraparte bancaria interna y evitar duplicar ingreso."),
+        @("E", "Otro abono operativo", "OTRO_ABONO", "Mantener como abono explicado con criterio manual."),
+        @("F", "Bloquear: no calza ninguna", "BLOQUEAR_REVISION", "Mantener pendiente y pedir revision manual.", "BLOQUEADO")
+      )
+      foreach ($d in $defs) {
+        $choices += New-FinanzasAdminChoice -Key $d[0] -Label $d[1] -Value $d[2] -Effect $d[3] -Outcome $(if ($d.Count -ge 5) { $d[4] } else { "CRITERIO_REGISTRADO" }) -Recommended ([string]$SuggestionKind -eq [string]$d[2])
+      }
+    }
+    "F-CXP03" {
+      $choices = @(
+        New-FinanzasAdminChoice -Key "A" -Label "Proyecto / costo directo" -Value "PROYECTO_COSTO_DIRECTO" -Effect "Asignar a proyecto o pedir proyecto si falta; categoria costo directo."
+        New-FinanzasAdminChoice -Key "B" -Label "OPEX fijo corporativo" -Value "OPEX_CORP_OPEX_FIJO" -Effect "Clasificar como OPEX_CORP + OPEX_FIJO."
+        New-FinanzasAdminChoice -Key "C" -Label "OPEX variable" -Value "OPEX_CORP_OPEX_VARIABLE" -Effect "Clasificar como OPEX_CORP + OPEX_VARIABLE."
+        New-FinanzasAdminChoice -Key "D" -Label "Stock / control especial" -Value "STOCK_CONTROL_ESPECIAL" -Effect "No llevar directo a proyecto; pedir respaldo de bodega/control."
+        New-FinanzasAdminChoice -Key "E" -Label "Inversion, impuesto, financiero u otro" -Value "NO_OPERACIONAL_ESPECIAL" -Effect "Clasificar fuera de costo directo/OPEX normal segun respaldo."
+        New-FinanzasAdminChoice -Key "F" -Label "Bloquear: falta respaldo" -Value "BLOQUEAR_REVISION" -Effect "Mantener pendiente hasta que exista respaldo suficiente." -Outcome "BLOQUEADO"
+      )
+    }
+    "F-CXP04" {
+      $choices = @(
+        New-FinanzasAdminChoice -Key "A" -Label "Pods / costo directo" -Value "POD_COSTO_DIRECTO" -Effect "Linea Pods + costo directo de obra."
+        New-FinanzasAdminChoice -Key "B" -Label "Momentum / costo directo" -Value "MODULAR_COSTO_DIRECTO" -Effect "Linea Momentum + costo directo de obra."
+        New-FinanzasAdminChoice -Key "C" -Label "Soluciones transitorias / costo directo" -Value "EMERGENCIA_COSTO_DIRECTO" -Effect "Linea Soluciones transitorias + costo directo de obra."
+        New-FinanzasAdminChoice -Key "D" -Label "Galpones / industrial / costo directo" -Value "INDUSTRIAL_COSTO_DIRECTO" -Effect "Linea Galpones/industrial + costo directo de obra."
+        New-FinanzasAdminChoice -Key "E" -Label "OPEX corporativo" -Value "OPEX_CORP" -Effect "Gasto admin/comercial/I+D; luego precisar OPEX fijo o variable."
+        New-FinanzasAdminChoice -Key "F" -Label "Impuesto, financiero, inversion u otro" -Value "NO_OPERACIONAL_ESPECIAL" -Effect "Clasificar fuera de costo directo normal."
+        New-FinanzasAdminChoice -Key "G" -Label "Bloquear: falta criterio" -Value "BLOQUEAR_REVISION" -Effect "Mantener sin clasificar hasta revision manual." -Outcome "BLOQUEADO"
+      )
+    }
+    "F-CXC03" {
+      $choices = @(
+        New-FinanzasAdminChoice -Key "A" -Label "Vincular a proyecto CRM probable" -Value "CXC_PROYECTO_CRM" -Effect "Buscar proyecto/negocio CRM por cliente, folio o glosa antes de cierre."
+        New-FinanzasAdminChoice -Key "B" -Label "Ingreso Pods" -Value "POD_INGRESO" -Effect "Linea Pods + ingreso; pedir proyecto si corresponde."
+        New-FinanzasAdminChoice -Key "C" -Label "Ingreso Momentum" -Value "MODULAR_INGRESO" -Effect "Linea Momentum + ingreso; pedir proyecto si corresponde."
+        New-FinanzasAdminChoice -Key "D" -Label "Ingreso Soluciones transitorias" -Value "EMERGENCIA_INGRESO" -Effect "Linea Soluciones transitorias + ingreso; pedir proyecto si corresponde."
+        New-FinanzasAdminChoice -Key "E" -Label "Ingreso Galpones / industrial" -Value "INDUSTRIAL_INGRESO" -Effect "Linea Galpones/industrial + ingreso; pedir proyecto si corresponde."
+        New-FinanzasAdminChoice -Key "F" -Label "Excepcion sin proyecto" -Value "CXC_EXCEPCION_SIN_PROYECTO" -Effect "Dejar documentado que no corresponde vinculo a proyecto."
+        New-FinanzasAdminChoice -Key "G" -Label "Bloquear: revisar con Comercial" -Value "BLOQUEAR_REVISION" -Effect "Escalar antes de clasificar." -Outcome "BLOQUEADO"
+      )
+    }
+    default {
+      $choices = @(
+        New-FinanzasAdminChoice -Key "A" -Label "Aprobar propuesta del agente" -Value "APROBAR_PROPUESTA" -Effect "Registrar criterio como aprobado para este caso." -Outcome "APROBADO"
+        New-FinanzasAdminChoice -Key "B" -Label "Corregir criterio" -Value "CORREGIR_CRITERIO" -Effect "Responder con el criterio correcto para que el agente aprenda." -Outcome "CORREGIDO"
+        New-FinanzasAdminChoice -Key "C" -Label "Bloquear" -Value "BLOQUEAR_REVISION" -Effect "No usar este caso hasta revision manual." -Outcome "BLOQUEADO"
+        New-FinanzasAdminChoice -Key "D" -Label "Rechazar" -Value "RECHAZAR_PROPUESTA" -Effect "Descartar la propuesta para este caso." -Outcome "RECHAZADO"
+      )
+    }
+  }
+  @($choices)
+}
+
 function New-FinanzasAdminCase {
   param(
     [string]$Id,
@@ -1905,6 +1998,7 @@ function New-FinanzasAdminCase {
     [string]$Confidence,
     [string]$ProposedAction,
     [string]$Question,
+    [object[]]$Choices = @(),
     [string]$SkillKey,
     [string]$SkillName,
     [datetime]$Now,
@@ -1938,6 +2032,8 @@ function New-FinanzasAdminCase {
     confidence = $Confidence
     proposedAction = $ProposedAction
     question = $Question
+    choices = @($Choices)
+    replyFormat = "${mailCode}: A"
     skillKey = $SkillKey
     skillName = $SkillName
     mode = "shadow_proposal"
@@ -1987,7 +2083,8 @@ function Get-FinanzasAdminCases {
     $title = if ($direction -eq "cargo") { "Cargo bancario sin destino" } else { "Abono bancario sin destino" }
     $amount = [double]$suggestion.amount
     $question = "Valentina, este $direction bancario por $(Format-Clp $amount) figura sin destino. Propongo revisarlo como $($suggestion.kind). ¿Lo apruebo para este caso, lo corrijo o lo dejo bloqueado?"
-    $cases += New-FinanzasAdminCase -Id $id -Code $code -Severity "rojo" -Domain "Banco" -Title $title -Detail $suggestion.reason -Amount $amount -SourceCollection ([string]$Config.collections.fin_mov_bancarios) -SourceId $sourceId -SourceDate ([string]$mov.fecha) -SourceLabel $label -SuggestionKind ([string]$suggestion.kind) -Confidence ([string]$suggestion.confidence) -ProposedAction ([string]$suggestion.proposedAction) -Question $question -SkillKey ([string]$skill.key) -SkillName ([string]$skill.name) -Now $Now -Existing $existing[$id]
+    $choices = @(Get-FinanzasAdminChoiceSet -Code $code -SuggestionKind ([string]$suggestion.kind))
+    $cases += New-FinanzasAdminCase -Id $id -Code $code -Severity "rojo" -Domain "Banco" -Title $title -Detail $suggestion.reason -Amount $amount -SourceCollection ([string]$Config.collections.fin_mov_bancarios) -SourceId $sourceId -SourceDate ([string]$mov.fecha) -SourceLabel $label -SuggestionKind ([string]$suggestion.kind) -Confidence ([string]$suggestion.confidence) -ProposedAction ([string]$suggestion.proposedAction) -Question $question -Choices $choices -SkillKey ([string]$skill.key) -SkillName ([string]$skill.name) -Now $Now -Existing $existing[$id]
   }
 
   foreach ($f in @($Data.fin_facturas_ap | Sort-Object fechaEmision -Descending)) {
@@ -2003,14 +2100,16 @@ function Get-FinanzasAdminCases {
       $skill = Get-FinanzasAdminSkillDefinition -Code $code
       $id = "ap-destino-$sourceId" -replace '[^A-Za-z0-9_-]', '_'
       $question = "Valentina, esta CxP de $($f.razonSocialContraparte) por $(Format-Clp (Get-Number $f.montoTotal)) no tiene destino. Propongo clasificarla como proyecto, OPEX o control especial segun respaldo. ¿Cual criterio uso?"
-      $cases += New-FinanzasAdminCase -Id $id -Code $code -Severity "amarillo" -Domain "CxP" -Title "Factura CxP sin destino" -Detail "No tiene proyecto/asignacion ni clasificacion OPEX suficiente." -Amount (Get-Number $f.montoTotal) -SourceCollection ([string]$Config.collections.fin_facturas_ap) -SourceId $sourceId -SourceDate ([string]$f.fechaEmision) -SourceLabel $label -SuggestionKind "CLASIFICAR_DESTINO_CXP" -Confidence "media" -ProposedAction "Asignar proyecto, OPEX, stock/control especial o excepcion documentada." -Question $question -SkillKey ([string]$skill.key) -SkillName ([string]$skill.name) -Now $Now -Existing $existing[$id]
+      $choices = @(Get-FinanzasAdminChoiceSet -Code $code -SuggestionKind "CLASIFICAR_DESTINO_CXP")
+      $cases += New-FinanzasAdminCase -Id $id -Code $code -Severity "amarillo" -Domain "CxP" -Title "Factura CxP sin destino" -Detail "No tiene proyecto/asignacion ni clasificacion OPEX suficiente." -Amount (Get-Number $f.montoTotal) -SourceCollection ([string]$Config.collections.fin_facturas_ap) -SourceId $sourceId -SourceDate ([string]$f.fechaEmision) -SourceLabel $label -SuggestionKind "CLASIFICAR_DESTINO_CXP" -Confidence "media" -ProposedAction "Asignar proyecto, OPEX, stock/control especial o excepcion documentada." -Question $question -Choices $choices -SkillKey ([string]$skill.key) -SkillName ([string]$skill.name) -Now $Now -Existing $existing[$id]
     }
     if ([string]$f.lineaNegocio -eq "SIN_CLASIFICAR") {
       $code = "F-CXP04"
       $skill = Get-FinanzasAdminSkillDefinition -Code $code
       $id = "ap-clasificacion-$sourceId" -replace '[^A-Za-z0-9_-]', '_'
       $question = "Valentina, esta CxP de $($f.razonSocialContraparte) esta SIN_CLASIFICAR. Propongo definir linea/categoria/cuenta y guardar el criterio como candidato de skill si se repite."
-      $cases += New-FinanzasAdminCase -Id $id -Code $code -Severity "amarillo" -Domain "CxP" -Title "Factura CxP sin clasificacion" -Detail "Linea de negocio SIN_CLASIFICAR; EERR de gestion incompleto." -Amount (Get-Number $f.montoTotal) -SourceCollection ([string]$Config.collections.fin_facturas_ap) -SourceId $sourceId -SourceDate ([string]$f.fechaEmision) -SourceLabel $label -SuggestionKind "CLASIFICAR_CXP" -Confidence "media" -ProposedAction "Completar linea, categoria, cuenta y proyecto/OPEX; proponer regla si proveedor/glosa se repite." -Question $question -SkillKey ([string]$skill.key) -SkillName ([string]$skill.name) -Now $Now -Existing $existing[$id]
+      $choices = @(Get-FinanzasAdminChoiceSet -Code $code -SuggestionKind "CLASIFICAR_CXP")
+      $cases += New-FinanzasAdminCase -Id $id -Code $code -Severity "amarillo" -Domain "CxP" -Title "Factura CxP sin clasificacion" -Detail "Linea de negocio SIN_CLASIFICAR; EERR de gestion incompleto." -Amount (Get-Number $f.montoTotal) -SourceCollection ([string]$Config.collections.fin_facturas_ap) -SourceId $sourceId -SourceDate ([string]$f.fechaEmision) -SourceLabel $label -SuggestionKind "CLASIFICAR_CXP" -Confidence "media" -ProposedAction "Completar linea, categoria, cuenta y proyecto/OPEX; proponer regla si proveedor/glosa se repite." -Question $question -Choices $choices -SkillKey ([string]$skill.key) -SkillName ([string]$skill.name) -Now $Now -Existing $existing[$id]
     }
   }
 
@@ -2027,7 +2126,8 @@ function Get-FinanzasAdminCases {
     $id = "ar-proyecto-$sourceId" -replace '[^A-Za-z0-9_-]', '_'
     $label = "$($f.razonSocialContraparte) folio $($f.folio)"
     $question = "Valentina, esta CxC de $($f.razonSocialContraparte) por $(Format-Clp (Get-Number $f.montoTotal)) no tiene proyecto. Propongo vincularla a CRM/proyecto antes de usarla para directorio."
-    $cases += New-FinanzasAdminCase -Id $id -Code $code -Severity "amarillo" -Domain "CxC" -Title "Factura CxC sin proyecto" -Detail "No tiene CRM/projectId/asignaciones; afecta lectura comercial y directorio." -Amount (Get-Number $f.montoTotal) -SourceCollection ([string]$Config.collections.fin_facturas_ar) -SourceId $sourceId -SourceDate ([string]$f.fechaEmision) -SourceLabel $label -SuggestionKind "VINCULAR_CXC_PROYECTO" -Confidence "media" -ProposedAction "Vincular a proyecto/CRM o dejar excepcion comercial documentada." -Question $question -SkillKey ([string]$skill.key) -SkillName ([string]$skill.name) -Now $Now -Existing $existing[$id]
+    $choices = @(Get-FinanzasAdminChoiceSet -Code $code -SuggestionKind "VINCULAR_CXC_PROYECTO")
+    $cases += New-FinanzasAdminCase -Id $id -Code $code -Severity "amarillo" -Domain "CxC" -Title "Factura CxC sin proyecto" -Detail "No tiene CRM/projectId/asignaciones; afecta lectura comercial y directorio." -Amount (Get-Number $f.montoTotal) -SourceCollection ([string]$Config.collections.fin_facturas_ar) -SourceId $sourceId -SourceDate ([string]$f.fechaEmision) -SourceLabel $label -SuggestionKind "VINCULAR_CXC_PROYECTO" -Confidence "media" -ProposedAction "Vincular a proyecto/CRM o dejar excepcion comercial documentada." -Question $question -Choices $choices -SkillKey ([string]$skill.key) -SkillName ([string]$skill.name) -Now $Now -Existing $existing[$id]
   }
 
   @($cases | Sort-Object @{ Expression = { if ($_.severity -eq "rojo") { 0 } else { 1 } } }, @{ Expression = "amount"; Descending = $true })
@@ -2085,6 +2185,45 @@ function Build-FinanzasAdminReport {
   }
 }
 
+function Render-FinanzasAdminQuestionCards {
+  param([object[]]$Cases)
+  if (@($Cases).Count -eq 0) { return (New-MayuEmptyState -Text "Sin preguntas individuales pendientes.") }
+  $html = ""
+  foreach ($case in @($Cases)) {
+    $tone = Get-MayuEmailTone -Tone ([string]$case.severity)
+    $choices = @($case.choices)
+    $choiceHtml = ""
+    if ($choices.Count -gt 0) {
+      foreach ($choice in $choices) {
+        $recommended = if ($choice.recommended) { " <span style='color:#166534;font-weight:700;'>(propuesta del agente)</span>" } else { "" }
+        $choiceHtml += "<li style='margin:0 0 6px 0;'><strong>$(HtmlEscape $choice.key)) $(HtmlEscape $choice.label)</strong>$recommended<br><span style='color:#5f6368;'>$(HtmlEscape $choice.effect)</span></li>"
+      }
+    } else {
+      $choiceHtml = "<li><strong>A) Aprobar</strong></li><li><strong>B) Corregir criterio</strong></li><li><strong>C) Bloquear</strong></li><li><strong>D) Rechazar</strong></li>"
+    }
+    $replyExample = "$(HtmlEscape $case.mailCode): A"
+    $html += @"
+<div style="border:1px solid #e5e7eb;border-left:4px solid $($tone.accent);background:#ffffff;padding:12px 14px;margin:0 0 12px 0;">
+  <div style="margin-bottom:6px;">
+    <span style="display:inline-block;background:$($tone.soft);border:1px solid $($tone.accent);color:#202124;font-size:11px;line-height:1;text-transform:uppercase;letter-spacing:.3px;padding:5px 7px;">$(HtmlEscape $case.severity)</span>
+    <span style="color:#6b7280;font-size:12px;margin-left:6px;">$(HtmlEscape $case.domain)</span>
+  </div>
+  <div style="font-weight:700;color:#202124;margin-bottom:4px;">$(HtmlEscape $case.mailCode) / $(HtmlEscape $case.code) - $(HtmlEscape $case.title)</div>
+  <div style="color:#4b5563;margin-bottom:8px;">$(HtmlEscape $case.sourceLabel) - $(HtmlEscape $case.detail) - Monto: $(HtmlEscape (Format-Clp (Get-Number $case.amount)))</div>
+  <div style="background:#f8fafc;border:1px solid #edf2f7;padding:8px 10px;color:#30343b;margin-bottom:10px;"><strong>Pregunta:</strong> $(HtmlEscape $case.question)</div>
+  <div style="background:#fffef7;border:1px solid #f3e8b8;padding:8px 10px;color:#30343b;margin-bottom:10px;">
+    <strong>Alternativas para responder:</strong>
+    <ul style="margin:8px 0 0 18px;padding:0;">$choiceHtml</ul>
+  </div>
+  <div style="font-size:13px;background:#f4f7fb;border:1px solid #dbe7f3;padding:8px 10px;color:#30343b;">
+    Responde una linea asi: <strong>$replyExample</strong>. Si ninguna alternativa calza: <strong>$(HtmlEscape $case.mailCode): corregir: [criterio]</strong>
+  </div>
+</div>
+"@
+  }
+  $html
+}
+
 function Render-FinanzasAdminHtml {
   param([object]$Report)
   $s = $Report.summary
@@ -2108,18 +2247,6 @@ function Render-FinanzasAdminHtml {
       ref = $_.scope
     }
   })
-  $questionCards = @($Report.questions | ForEach-Object {
-    [pscustomobject]@{
-      severity = $_.severity
-      area = $_.domain
-      code = if ($_.mailCode) { "$($_.mailCode) / $($_.code)" } else { $_.code }
-      title = $_.title
-      detail = "$($_.sourceLabel) - $($_.detail)"
-      action = $_.question
-      owner = "Valentina"
-      ref = $_.id
-    }
-  })
   $caseCards = @($Report.cases | Select-Object -First 40 | ForEach-Object {
     [pscustomobject]@{
       severity = $_.severity
@@ -2133,7 +2260,7 @@ function Render-FinanzasAdminHtml {
     }
   })
   $skillsHtml = if ($skillCards.Count -eq 0) { New-MayuEmptyState -Text "Sin skills candidatas nuevas en esta corrida." } else { Render-IssueListCards -Items $skillCards }
-  $questionsHtml = if ($questionCards.Count -eq 0) { New-MayuEmptyState -Text "Sin preguntas individuales pendientes." } else { Render-IssueListCards -Items $questionCards }
+  $questionsHtml = Render-FinanzasAdminQuestionCards -Cases @($Report.questions)
   $queueHtml = Render-IssueListCards -Items @($Report.queue | Select-Object -First 40)
   $casesHtml = if ($caseCards.Count -eq 0) { New-MayuEmptyState -Text "Sin casos individuales en modo sombra." } else { Render-IssueListCards -Items $caseCards }
 
@@ -2142,7 +2269,7 @@ function Render-FinanzasAdminHtml {
 <div style="background:#f4f7fb;border-left:4px solid #0078d4;padding:12px 14px;color:#30343b;margin:12px 0 18px 0;">
   El Administrador Finanzas esta activo como piloto Nivel 2. Baja alertas agrupadas a casos individuales y trabaja en modo sombra: propone, persiste bandeja y aprende patrones candidatos, pero no modifica datos financieros sin aprobacion.
   <br><br>
-  Para responder por correo, usa una linea por caso: <strong>ADM-XXXXXX: aprobar</strong>, <strong>ADM-XXXXXX: corregir: [criterio]</strong>, <strong>ADM-XXXXXX: bloquear</strong> o <strong>ADM-XXXXXX: rechazar</strong>.
+  Para responder por correo, Valentina solo debe elegir una alternativa por caso, por ejemplo: <strong>ADM-XXXXXX: A</strong>. Si ninguna alternativa calza, puede responder: <strong>ADM-XXXXXX: corregir: [criterio]</strong>.
 </div>
 $(New-MayuEmailSection -Title "Preguntas para Valentina" -Html $questionsHtml)
 $(New-MayuEmailSection -Title "Casos individuales modo sombra" -Html $casesHtml)
@@ -3283,8 +3410,38 @@ function Invoke-FinanzasDteInbox {
   }
 }
 
+function Resolve-FinanzasAdminChoiceSelection {
+  param([object]$Case, [string]$Text)
+  if ($null -eq $Case -or -not $Case.PSObject.Properties["choices"]) { return $null }
+  $clean = ([string]$Text).Trim()
+  if ([string]::IsNullOrWhiteSpace($clean)) { return $null }
+  foreach ($choice in @($Case.choices)) {
+    $key = [string]$choice.key
+    $label = [string]$choice.label
+    $value = [string]$choice.value
+    if ([string]::IsNullOrWhiteSpace($key)) { continue }
+    if ($clean -match ("(?i)^\s*(opci.n\s*)?" + [regex]::Escape($key) + "(\)|\.|\s|$)")) { return $choice }
+    if (-not [string]::IsNullOrWhiteSpace($value) -and $clean -match ("(?i)\b" + [regex]::Escape($value) + "\b")) { return $choice }
+    if (-not [string]::IsNullOrWhiteSpace($label) -and $clean -match [regex]::Escape($label)) { return $choice }
+  }
+  $null
+}
+
 function Resolve-FinanzasAdminReplyDecision {
-  param([string]$Text)
+  param([string]$Text, [object]$Case = $null)
+  $choice = Resolve-FinanzasAdminChoiceSelection -Case $Case -Text $Text
+  if ($null -ne $choice) {
+    $outcome = if ($choice.outcome) { [string]$choice.outcome } else { "CRITERIO_REGISTRADO" }
+    return [pscustomobject]@{
+      status = $outcome
+      label = "opcion $($choice.key): $($choice.label)"
+      requiresDetail = $false
+      choiceKey = [string]$choice.key
+      choiceLabel = [string]$choice.label
+      choiceValue = [string]$choice.value
+      choiceEffect = [string]$choice.effect
+    }
+  }
   $clean = ([string]$Text).ToLowerInvariant()
   if ($clean -match "\b(aprobar|aprobado|apruebo|ok|confirmo|vale)\b") {
     return [pscustomobject]@{ status = "APROBADO"; label = "aprobado"; requiresDetail = $false }
@@ -3301,6 +3458,46 @@ function Resolve-FinanzasAdminReplyDecision {
   $null
 }
 
+function Convert-FinanzasAdminEmailBodyToText {
+  param([object]$Message)
+  $bodyContent = ""
+  if ($Message -and $Message.PSObject.Properties["body"] -and $Message.body -and $Message.body.PSObject.Properties["content"]) {
+    $bodyContent = [string]$Message.body.content
+  }
+  if (-not [string]::IsNullOrWhiteSpace($bodyContent)) {
+    $text = $bodyContent -replace "(?i)<br\s*/?>", "`n"
+    $text = $text -replace "(?i)</p>|</div>|</li>|</tr>|</h\d>", "`n"
+    $text = $text -replace "(?s)<style.*?</style>", " "
+    $text = $text -replace "(?s)<script.*?</script>", " "
+    $text = $text -replace "<[^>]+>", " "
+    return ([System.Net.WebUtility]::HtmlDecode($text) -replace "[ \t]+", " ").Trim()
+  }
+  ([string]$Message.bodyPreview).Trim()
+}
+
+function Get-FinanzasAdminLatestReplyText {
+  param([object]$Message)
+  $text = Convert-FinanzasAdminEmailBodyToText -Message $Message
+  if ([string]::IsNullOrWhiteSpace($text)) { return "" }
+  $cut = $text.Length
+  $markers = @(
+    "(?im)^\s*[-_]{5,}.*$",
+    "(?im)^\s*De:\s",
+    "(?im)^\s*From:\s",
+    "(?im)^\s*Enviado:\s",
+    "(?im)^\s*Sent:\s",
+    "(?im)^\s*Para:\s",
+    "(?im)^\s*To:\s",
+    "(?im)^\s*On .+ wrote:\s*$",
+    "(?im)^\s*El .+ escribi"
+  )
+  foreach ($marker in $markers) {
+    $m = [regex]::Match($text, $marker)
+    if ($m.Success -and $m.Index -lt $cut) { $cut = $m.Index }
+  }
+  $text.Substring(0, $cut).Trim()
+}
+
 function Get-FinanzasAdminReplyMatches {
   param([object[]]$Cases, [string]$Text)
   $matches = @()
@@ -3315,6 +3512,70 @@ function Get-FinanzasAdminReplyMatches {
   @($matches)
 }
 
+function Get-FinanzasAdminReplyActions {
+  param([object[]]$Cases, [string]$Text)
+  $caseByCode = @{}
+  foreach ($case in @($Cases)) {
+    $mailCode = ([string]$case.mailCode).ToUpperInvariant()
+    if (-not [string]::IsNullOrWhiteSpace($mailCode)) { $caseByCode[$mailCode] = $case }
+  }
+  $actions = @()
+  $seen = New-Object System.Collections.Generic.HashSet[string]
+  foreach ($line in @(([string]$Text) -split "\r?\n")) {
+    if ($line -match "(?i)\b(responde|ejemplo|formato|alternativas para responder|para responder por correo)\b") { continue }
+    if ($line -match "(?i)^\s*(ADM-[A-F0-9]{8})\s*[:：\-]\s*(.+?)\s*$") {
+      $code = $matches[1].ToUpperInvariant()
+      $response = ([string]$matches[2]).Trim()
+      if ($caseByCode.ContainsKey($code) -and -not [string]::IsNullOrWhiteSpace($response)) {
+        $key = "$code|$response"
+        if ($seen.Add($key)) {
+          $actions += [pscustomobject]@{ case = $caseByCode[$code]; response = $response }
+        }
+      }
+    }
+  }
+  if ($actions.Count -eq 0) {
+    $short = [string]$Text
+    if ($short.Length -gt 600) { $short = $short.Substring(0, 600) }
+    foreach ($m in [regex]::Matches($short, "(?i)(ADM-[A-F0-9]{8})\s*[:：]\s*([^;\r\n]{1,140})")) {
+      $prefixStart = [Math]::Max(0, $m.Index - 45)
+      $prefix = $short.Substring($prefixStart, $m.Index - $prefixStart)
+      if ($prefix -match "(?i)(responde|ejemplo|formato)") { continue }
+      $code = $m.Groups[1].Value.ToUpperInvariant()
+      $response = ([string]$m.Groups[2].Value).Trim()
+      if ($caseByCode.ContainsKey($code) -and -not [string]::IsNullOrWhiteSpace($response)) {
+        $key = "$code|$response"
+        if ($seen.Add($key)) {
+          $actions += [pscustomobject]@{ case = $caseByCode[$code]; response = $response }
+        }
+      }
+    }
+  }
+  @($actions)
+}
+
+function Render-FinanzasAdminReplyHint {
+  param([object]$Case = $null)
+  $choicesHtml = ""
+  if ($Case -and $Case.PSObject.Properties["choices"] -and @($Case.choices).Count -gt 0) {
+    $choicesHtml = (@($Case.choices) | ForEach-Object {
+      "<li><strong>$(HtmlEscape $_.key)</strong>: $(HtmlEscape $_.label)</li>"
+    }) -join ""
+  } else {
+    $choicesHtml = "<li><strong>A</strong>: aprobar propuesta</li><li><strong>B</strong>: corregir criterio</li><li><strong>C</strong>: bloquear</li><li><strong>D</strong>: rechazar</li>"
+  }
+  $code = if ($Case -and $Case.mailCode) { [string]$Case.mailCode } else { "ADM-XXXXXX" }
+@"
+<div style="font-family:Arial,sans-serif;font-size:14px;color:#202124;line-height:1.45;">
+  <p>Recibi la referencia al caso, pero no pude interpretar la decision.</p>
+  <p>Responde con una linea asi: <strong>$(HtmlEscape $code): A</strong></p>
+  <ul>$choicesHtml</ul>
+  <p>Si ninguna alternativa calza, responde: <strong>$(HtmlEscape $code): corregir: [criterio]</strong>.</p>
+  <p>No ejecutare cambios financieros solo con esta respuesta; primero registro el criterio.</p>
+</div>
+"@
+}
+
 function Try-ProcessFinanzasAdminReply {
   param(
     [object]$Config,
@@ -3327,27 +3588,25 @@ function Try-ProcessFinanzasAdminReply {
   $from = [string]$Message.from.emailAddress.address
   if ($from -ne [string]$Config.mail.valentina -and $from -ne [string]$Config.mail.felix) { return $false }
   $subject = [string]$Message.subject
-  $text = "$subject`n$($Message.bodyPreview)"
+  $latestText = Get-FinanzasAdminLatestReplyText -Message $Message
+  $text = "$subject`n$latestText"
   if ($text -notmatch "(?i)ADM-[A-F0-9]{8}|bank-|ap-|ar-") { return $false }
-  $matches = @(Get-FinanzasAdminReplyMatches -Cases $Cases -Text $text)
-  if ($matches.Count -eq 0) { return $false }
+  $actions = @(Get-FinanzasAdminReplyActions -Cases $Cases -Text $latestText)
+  if ($actions.Count -eq 0) { return $false }
 
-  $decision = Resolve-FinanzasAdminReplyDecision -Text $text
   $replySubject = if ($subject -match "^(?i)re:") { $subject } else { "RE: $subject" }
-  if ($null -eq $decision) {
-    $hint = @"
-<div style="font-family:Arial,sans-serif;font-size:14px;color:#202124;line-height:1.45;">
-  <p>Recibi la referencia al caso, pero no pude interpretar la decision.</p>
-  <p>Por favor responde con este formato:</p>
-  <ul>
-    <li><strong>ADM-XXXXXX: aprobar</strong></li>
-    <li><strong>ADM-XXXXXX: corregir: [criterio]</strong></li>
-    <li><strong>ADM-XXXXXX: bloquear</strong></li>
-    <li><strong>ADM-XXXXXX: rechazar</strong></li>
-  </ul>
-  <p>No ejecutare cambios financieros solo con esta respuesta; primero registro el criterio.</p>
-</div>
-"@
+  $resolved = @()
+  foreach ($action in @($actions)) {
+    $decision = Resolve-FinanzasAdminReplyDecision -Text ([string]$action.response) -Case $action.case
+    if ($null -eq $decision) {
+      $hint = Render-FinanzasAdminReplyHint -Case $action.case
+      Send-GraphMail -Token $GraphToken -Sender $mailbox -To @($from) -Cc @() -Subject $replySubject -HtmlBody $hint
+      return $true
+    }
+    $resolved += [pscustomobject]@{ case = $action.case; response = [string]$action.response; decision = $decision }
+  }
+  if ($resolved.Count -eq 0) {
+    $hint = Render-FinanzasAdminReplyHint
     Send-GraphMail -Token $GraphToken -Sender $mailbox -To @($from) -Cc @() -Subject $replySubject -HtmlBody $hint
     return $true
   }
@@ -3355,21 +3614,30 @@ function Try-ProcessFinanzasAdminReply {
   $writeToken = Get-FirestoreWriteToken -Config $Config
   $collection = if ($Config.collections.fin_admin_cases) { [string]$Config.collections.fin_admin_cases } else { "fin_admin_cases" }
   $updated = @()
-  foreach ($case in @($matches)) {
+  $decisionLabels = @()
+  foreach ($item in @($resolved)) {
+    $case = $item.case
+    $decision = $item.decision
     $case | Add-Member -NotePropertyName status -NotePropertyValue ([string]$decision.status) -Force
-    $case | Add-Member -NotePropertyName decision -NotePropertyValue ([string]$Message.bodyPreview) -Force
+    $case | Add-Member -NotePropertyName decision -NotePropertyValue ([string]$item.response) -Force
+    $case | Add-Member -NotePropertyName selectedChoiceKey -NotePropertyValue ([string]$decision.choiceKey) -Force
+    $case | Add-Member -NotePropertyName selectedChoiceLabel -NotePropertyValue ([string]$decision.choiceLabel) -Force
+    $case | Add-Member -NotePropertyName selectedChoiceValue -NotePropertyValue ([string]$decision.choiceValue) -Force
+    $case | Add-Member -NotePropertyName selectedChoiceEffect -NotePropertyValue ([string]$decision.choiceEffect) -Force
     $case | Add-Member -NotePropertyName decidedBy -NotePropertyValue $from -Force
     $case | Add-Member -NotePropertyName decidedAt -NotePropertyValue ($Now.ToString("o")) -Force
     $case | Add-Member -NotePropertyName decisionSource -NotePropertyValue "email" -Force
     $case | Add-Member -NotePropertyName replyMessageId -NotePropertyValue ([string]$Message.id) -Force
     Set-FirestoreDocument -Config $Config -Token $writeToken -CollectionName $collection -DocumentId ([string]$case.id) -Data $case
     $updated += "$($case.mailCode) / $($case.title)"
+    $decisionLabels += [string]$decision.label
   }
 
   $items = ($updated | ForEach-Object { "<li>$(HtmlEscape $_)</li>" }) -join ""
+  $labelText = (($decisionLabels | Select-Object -Unique) -join "; ")
   $html = @"
 <div style="font-family:Arial,sans-serif;font-size:14px;color:#202124;line-height:1.45;">
-  <p>Registrado: decision <strong>$([System.Net.WebUtility]::HtmlEncode($decision.label))</strong>.</p>
+  <p>Registrado: <strong>$([System.Net.WebUtility]::HtmlEncode($labelText))</strong>.</p>
   <ul>$items</ul>
   <p>Esto queda como aprendizaje/criterio del Administrador Finanzas. En este nivel no ejecuto cambios en caja, pagos, impuestos, cierres ni datos financieros sensibles por correo.</p>
 </div>
