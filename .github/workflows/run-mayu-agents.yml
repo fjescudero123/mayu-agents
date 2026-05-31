@@ -12,6 +12,7 @@ on:
           - morning_reports
           - daily_pulse
           - bodega_materiales
+          - bodega_materiales_admin
           - bodega_materiales_respuestas
           - finanzas
           - finanzas_admin

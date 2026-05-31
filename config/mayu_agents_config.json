@@ -13,6 +13,7 @@
     "biblia_folder": "agentes_mayu/biblia_proyecto",
     "traspaso_folder": "agentes_mayu/traspaso_control_operacion",
     "bodega_materiales_folder": "agentes_mayu/bodega_materiales",
+    "bodega_materiales_admin_folder": "agentes_mayu/bodega_materiales/administrador",
     "finanzas_folder": "agentes_mayu/finanzas",
     "finanzas_admin_folder": "agentes_mayu/finanzas/administrador",
     "finanzas_dte_inbox_folder": "agentes_mayu/finanzas/dte_recibidos",
@@ -64,7 +65,8 @@
     "fin_tarjetas_credito": "fin_tarjetas_credito",
     "fin_importaciones": "fin_importaciones",
     "fin_dte_inbox": "fin_dte_inbox",
-    "fin_admin_cases": "fin_admin_cases"
+    "fin_admin_cases": "fin_admin_cases",
+    "bma_admin_cases": "bma_admin_cases"
   },
   "doc_requirements": {
     "bom": { "area": "ingenieria", "doc_ids": ["i1"], "owner": "Martin" },
@@ -107,6 +109,13 @@
     "bodega_materiales": {
       "enabled": true,
       "send_email_default": true
+    },
+    "bodega_materiales_admin": {
+      "enabled": true,
+      "send_email_default": false,
+      "stage": "piloto_nivel_2",
+      "shadow_mode": true,
+      "allow_real_email": false
     },
     "finanzas": {
       "enabled": true,
