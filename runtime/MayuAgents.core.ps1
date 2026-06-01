@@ -196,6 +196,17 @@ function Set-GraphMailRead {
   } | Out-Null
 }
 
+function Try-SetGraphMailRead {
+  param([string]$Token, [string]$Mailbox, [string]$MessageId, [string]$Context = "Mailbox")
+  try {
+    Set-GraphMailRead -Token $Token -Mailbox $Mailbox -MessageId $MessageId
+    return $true
+  } catch {
+    Write-Output "${Context}: no se pudo marcar correo como leido ($($_.Exception.Message))."
+    return $false
+  }
+}
+
 function Disable-GraphMailboxAutoReplies {
   param([string]$Token, [string]$Mailbox)
   try {
@@ -2738,7 +2749,7 @@ function Invoke-BodegaMaterialesResponder {
     $subject = [string]$msg.subject
     $bodyText = "$subject`n$($msg.bodyPreview)`n$($msg.body.content)"
     if (Try-ProcessBodegaMaterialesAdminReply -Config $Config -GraphToken $GraphToken -Message $msg -Cases $adminCases -Now $Now) {
-      Set-GraphMailRead -Token $GraphToken -Mailbox $mailbox -MessageId $messageId
+      Try-SetGraphMailRead -Token $GraphToken -Mailbox $mailbox -MessageId $messageId -Context "Bodega+Materiales responder" | Out-Null
       [void]$processedSet.Add($messageId)
       $processed++
       Write-Output "Bodega+Materiales responder: decision Administrador BMA registrada desde correo."
@@ -2753,6 +2764,7 @@ function Invoke-BodegaMaterialesResponder {
     $audience = Get-UniqueEmails -Emails @((Get-BodegaMaterialesMailAudience -Config $Config) + $from) -Exclude @($mailbox)
     $replySubject = if ($subject -match "^(?i)re:") { $subject } else { "RE: $subject" }
     Send-GraphMail -Token $GraphToken -Sender $mailbox -To $audience -Cc @() -Subject $replySubject -HtmlBody $reply
+    Try-SetGraphMailRead -Token $GraphToken -Mailbox $mailbox -MessageId $messageId -Context "Bodega+Materiales responder" | Out-Null
     [void]$processedSet.Add($messageId)
     $processed++
     Write-Output "Bodega+Materiales responder: respuesta enviada a audiencia oficial ($($audience -join ', ')) para $checkId."
@@ -5037,7 +5049,7 @@ function Invoke-FinanzasResponder {
     $subject = [string]$msg.subject
     $bodyText = "$subject`n$($msg.bodyPreview)`n$($msg.body.content)"
     if (Try-ProcessFinanzasAdminReply -Config $Config -GraphToken $GraphToken -Message $msg -Cases $adminCases -Now $Now) {
-      Set-GraphMailRead -Token $GraphToken -Mailbox $mailbox -MessageId $messageId
+      Try-SetGraphMailRead -Token $GraphToken -Mailbox $mailbox -MessageId $messageId -Context "Finanzas responder" | Out-Null
       [void]$processedSet.Add($messageId)
       $processed++
       Write-Output "Finanzas responder: decision Administrador Finanzas registrada desde correo."
@@ -5052,7 +5064,7 @@ function Invoke-FinanzasResponder {
     $audience = Get-UniqueEmails -Emails @($Config.mail.felix, $Config.mail.valentina, $from) -Exclude @($mailbox)
     $replySubject = if ($subject -match "^(?i)re:") { $subject } else { "RE: $subject" }
     Send-GraphMail -Token $GraphToken -Sender $mailbox -To $audience -Cc @() -Subject $replySubject -HtmlBody $reply
-    Set-GraphMailRead -Token $GraphToken -Mailbox $mailbox -MessageId $messageId
+    Try-SetGraphMailRead -Token $GraphToken -Mailbox $mailbox -MessageId $messageId -Context "Finanzas responder" | Out-Null
     [void]$processedSet.Add($messageId)
     $processed++
     Write-Output "Finanzas responder: respuesta enviada a audiencia oficial ($($audience -join ', ')) para $code."
