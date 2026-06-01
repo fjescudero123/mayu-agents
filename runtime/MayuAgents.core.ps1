@@ -2655,6 +2655,12 @@ function Try-ProcessBodegaMaterialesAdminReply {
   if ($text -notmatch "(?i)BMA-[A-F0-9]{8}") { return $false }
   $actions = @(Get-BodegaMaterialesAdminReplyActions -Cases $Cases -Text $latestText)
   if ($actions.Count -eq 0) { return $false }
+  $messageId = [string]$Message.id
+  $actions = @($actions | Where-Object { [string]$_.case.replyMessageId -ne $messageId })
+  if ($actions.Count -eq 0) {
+    Write-Output "Bodega+Materiales responder: correo ya estaba aplicado a sus casos."
+    return $true
+  }
 
   $replySubject = if ($subject -match "^(?i)re:") { $subject } else { "RE: $subject" }
   $resolved = @()
@@ -4959,6 +4965,12 @@ function Try-ProcessFinanzasAdminReply {
   if ($text -notmatch "(?i)ADM-[A-F0-9]{8}|bank-|ap-|ar-") { return $false }
   $actions = @(Get-FinanzasAdminReplyActions -Cases $Cases -Text $latestText)
   if ($actions.Count -eq 0) { return $false }
+  $messageId = [string]$Message.id
+  $actions = @($actions | Where-Object { [string]$_.case.replyMessageId -ne $messageId })
+  if ($actions.Count -eq 0) {
+    Write-Output "Finanzas responder: correo ya estaba aplicado a sus casos."
+    return $true
+  }
 
   $replySubject = if ($subject -match "^(?i)re:") { $subject } else { "RE: $subject" }
   $resolved = @()
