@@ -1736,6 +1736,109 @@ function Get-BodegaAdminProductDescription {
   ""
 }
 
+function Get-BodegaAdminApprovedProductCandidates {
+  param(
+    [object]$Data,
+    [string]$ProjectId,
+    [string]$CurrentDescription,
+    [string]$CurrentCode,
+    [int]$Max = 3
+  )
+  $candidates = @()
+  if ([string]::IsNullOrWhiteSpace($ProjectId)) { return @() }
+  $projects = @($Data.mat_projects | Where-Object {
+    $ids = @(
+      Get-FirstText $_ @("id", "matProjectId", "projectId", "proyectoId", "crmId", "chkId")
+    ) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }
+    @($ids | Where-Object { [string]$_ -eq $ProjectId }).Count -gt 0
+  })
+  $seen = New-Object System.Collections.Generic.HashSet[string]
+  foreach ($mp in @($projects)) {
+    foreach ($it in @($mp.items)) {
+      $code = Get-FirstText $it @("bomItemCode", "itemCode", "code", "matchCode", "id")
+      $desc = Get-FirstText $it @("descripcion", "description", "desc", "itemDesc", "nombre", "name")
+      if ([string]::IsNullOrWhiteSpace($code) -and [string]::IsNullOrWhiteSpace($desc)) { continue }
+      if (-not [string]::IsNullOrWhiteSpace($CurrentCode) -and $code -eq $CurrentCode) { continue }
+      if (-not $seen.Add("$code|$desc")) { continue }
+      $score = 0.0
+      if (-not [string]::IsNullOrWhiteSpace($CurrentDescription) -and -not [string]::IsNullOrWhiteSpace($desc)) {
+        $score = Get-TextSimilarity $CurrentDescription $desc
+        if ((Test-MeaningfullyDifferentSpecs $CurrentDescription $desc) -and $score -lt 0.95) { $score = [Math]::Max(0.0, $score - 0.25) }
+      } elseif (-not [string]::IsNullOrWhiteSpace($CurrentCode) -and -not [string]::IsNullOrWhiteSpace($code)) {
+        $score = Get-TextSimilarity $CurrentCode $code
+      }
+      if ($score -ge 0.15) {
+        $candidates += [pscustomobject][ordered]@{
+          code = $code
+          description = $desc
+          score = [Math]::Round($score, 3)
+        }
+      }
+    }
+  }
+  @($candidates | Sort-Object @{ Expression = "score"; Descending = $true }, description | Select-Object -First $Max)
+}
+
+function New-BodegaMaterialesAdminProductChoiceSet {
+  param(
+    [object[]]$Candidates,
+    [string]$CorrectionValue = "CORREGIR_PRODUCTO_OC"
+  )
+  $letters = @("A", "B", "C")
+  $choices = @()
+  $idx = 0
+  foreach ($candidate in @($Candidates | Select-Object -First 3)) {
+    $key = $letters[$idx]
+    $desc = if ($candidate.description) { [string]$candidate.description } else { "Producto sin descripcion" }
+    $code = [string]$candidate.code
+    $label = if ($code) { "Corregir a: $desc (codigo interno: $code)" } else { "Corregir a: $desc" }
+    $effect = if ($code) {
+      "Registrar que la OC debe corregirse a $desc, codigo interno $code. No cambia la app automaticamente."
+    } else {
+      "Registrar que la OC debe corregirse a $desc. No cambia la app automaticamente."
+    }
+    $choices += New-BodegaMaterialesAdminChoice -Key $key -Label $label -Value "$CorrectionValue|$code" -Effect $effect -Recommended ($idx -eq 0)
+    $idx++
+  }
+  if ($choices.Count -eq 0) {
+    return @(
+      New-BodegaMaterialesAdminChoice -Key "A" -Label "Dejar pendiente para buscar producto correcto" -Value "BLOQUEAR_REVISION_PRODUCTO" -Effect "El agente no encontro candidatos claros; no recepcionar ni usar en costos hasta revisar." -Outcome "BLOQUEADO" -Recommended $true
+      New-BodegaMaterialesAdminChoice -Key "B" -Label "Autorizar excepcion" -Value "EXCEPCION_PRODUCTO_PROYECTO" -Effect "El producto si corresponde al proyecto, aunque no aparezca en el listado aprobado."
+      New-BodegaMaterialesAdminChoice -Key "C" -Label "No hay problema" -Value "RECHAZAR_ALERTA" -Effect "Cerrar el caso porque la OC esta correcta." -Outcome "RECHAZADO"
+    )
+  }
+  $next = $choices.Count
+  $exceptionKey = @("B", "C", "D")[$next - 1]
+  $pendingKey = @("C", "D", "E")[$next - 1]
+  $rejectKey = @("D", "E", "F")[$next - 1]
+  $choices += New-BodegaMaterialesAdminChoice -Key $exceptionKey -Label "Autorizar excepcion" -Value "EXCEPCION_PRODUCTO_PROYECTO" -Effect "El producto actual si corresponde al proyecto, aunque no aparezca en el listado aprobado."
+  $choices += New-BodegaMaterialesAdminChoice -Key $pendingKey -Label "Dejar pendiente para revision" -Value "BLOQUEAR_REVISION_PRODUCTO" -Effect "No recepcionar ni usar en costos hasta revisar el producto." -Outcome "BLOQUEADO"
+  $choices += New-BodegaMaterialesAdminChoice -Key $rejectKey -Label "No hay problema" -Value "RECHAZAR_ALERTA" -Effect "Cerrar el caso porque la OC esta correcta." -Outcome "RECHAZADO"
+  @($choices)
+}
+
+function Get-BodegaMaterialesAdminDynamicChoiceSet {
+  param([object]$Data, [object]$Issue, [object]$Friendly, [object[]]$DefaultChoices)
+  $checkId = [string]$Issue.checkId
+  if ($checkId -notin @("B-0001", "B-0002", "B-0003", "B-B01", "B-C04", "B-C05")) { return @($DefaultChoices) }
+  $sourceRef = [string]$Issue.ref
+  $sourceCollection = Get-BodegaMaterialesAdminSourceCollection -CheckId $checkId
+  $found = Find-BodegaAdminRecordById -Data $Data -SourceRef $sourceRef -PreferredCollection $sourceCollection
+  $record = if ($found) { $found.record } else { $null }
+  $projectId = Get-FirstText $record @("matProjectId", "projectId", "proyectoId")
+  $code = Get-FirstText $record @("bomItemCode", "itemCode", "matchCode", "skuCode", "catalogCode", "codigoBodega", "code")
+  $desc = Get-BodegaAdminProductDescription -Data $Data -Record $record -ProjectId $projectId -Code $code
+  if ([string]::IsNullOrWhiteSpace($desc) -and $Friendly -and $Friendly.productLine) { $desc = [string]$Friendly.productLine }
+  $candidates = @(Get-BodegaAdminApprovedProductCandidates -Data $Data -ProjectId $projectId -CurrentDescription $desc -CurrentCode $code -Max 3)
+  if ($checkId -in @("B-0001", "B-0002")) {
+    return @(New-BodegaMaterialesAdminProductChoiceSet -Candidates $candidates -CorrectionValue "CORREGIR_PRODUCTO_OC")
+  }
+  if (@($candidates).Count -gt 0) {
+    return @(New-BodegaMaterialesAdminProductChoiceSet -Candidates $candidates -CorrectionValue "LINKEAR_SKU_EXISTENTE")
+  }
+  @($DefaultChoices)
+}
+
 function Get-BodegaAdminFriendlyTitle {
   param([string]$CheckId, [string]$Title)
   switch -Wildcard ($CheckId) {
@@ -1850,10 +1953,11 @@ function New-BodegaMaterialesAdminCase {
   $decidedBy = if ($Existing -and $Existing.decidedBy) { [string]$Existing.decidedBy } else { "" }
   $decidedAt = if ($Existing -and $Existing.decidedAt) { [string]$Existing.decidedAt } else { "" }
   $skill = Get-BodegaMaterialesAdminSkillDefinition -CheckId $checkId
-  $choices = @(Get-BodegaMaterialesAdminChoiceSet -CheckId $checkId)
   $owner = Get-BodegaMaterialesAdminCaseOwner -CheckId $checkId -OwnerText ([string]$Issue.owner)
   $sourceCollection = Get-BodegaMaterialesAdminSourceCollection -CheckId $checkId
   $friendly = Get-BodegaAdminFriendlyCopy -Data $Data -Issue $Issue -SourceCollection $sourceCollection
+  $defaultChoices = @(Get-BodegaMaterialesAdminChoiceSet -CheckId $checkId)
+  $choices = @(Get-BodegaMaterialesAdminDynamicChoiceSet -Data $Data -Issue $Issue -Friendly $friendly -DefaultChoices $defaultChoices)
   $question = "$($friendly.question) $($friendly.proposal)"
   [pscustomobject][ordered]@{
     id = $id
@@ -2283,9 +2387,6 @@ function Test-BodegaMaterialesAdminChoiceNeedsDetail {
   if ($Choice -and $Choice.PSObject.Properties["requiresDetail"] -and $Choice.requiresDetail) { return $true }
   $value = [string]$Choice.value
   if ($value -in @("CORREGIR_IDENTIDAD_OC", "CORREGIR_PRODUCTO_OC", "LINKEAR_SKU_EXISTENTE", "CORREGIR_MATCH_BOM")) { return $true }
-  $checkId = [string]$Case.checkId
-  $key = [string]$Choice.key
-  if ($checkId -in @("B-0001", "B-0002") -and $key -eq "A") { return $true }
   $false
 }
 
