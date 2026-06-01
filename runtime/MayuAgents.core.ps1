@@ -1011,14 +1011,21 @@ function Build-BodegaMaterialesReport {
     $ocId = Get-FirstText $oc @("id", "folio", "ocId")
     $projectId = Get-FirstText $oc @("matProjectId", "projectId", "proyectoId")
     $itemCode = Get-FirstText $oc @("bomItemCode", "itemCode", "matchCode", "code")
+    $itemCodeLegacy = Get-FirstText $oc @("itemCodeLegacy", "bomItemCodeLegacy", "legacyCode", "codigoLegacy")
     $proveedor = Get-FirstText $oc @("proveedor", "supplierName", "vendor", "razonSocial")
     $ocSkuCode = Get-FirstText $oc @("skuCode", "catalogCode", "codigoBodega")
     $bomSkuCode = Resolve-BodegaBomSku -Index $bomSkuIndex -ProjectId $projectId -ItemCode $itemCode
-    $skuCode = if ($ocSkuCode) { $ocSkuCode } else { $bomSkuCode }
+    $itemCodeAsSku = if ((-not [string]::IsNullOrWhiteSpace($itemCode)) -and $catalogCodes.Contains($itemCode)) { $itemCode } else { "" }
+    $skuCode = if ($ocSkuCode) { $ocSkuCode } elseif ($itemCodeAsSku) { $itemCodeAsSku } else { $bomSkuCode }
+    $productKnown = (
+      ((-not [string]::IsNullOrWhiteSpace($skuCode)) -and $catalogCodes.Contains($skuCode)) -or
+      ((-not [string]::IsNullOrWhiteSpace($itemCode)) -and $bomCodes.Contains($itemCode)) -or
+      ((-not [string]::IsNullOrWhiteSpace($itemCodeLegacy)) -and $bomCodes.Contains($itemCodeLegacy))
+    )
     if ([string]::IsNullOrWhiteSpace($projectId) -or [string]::IsNullOrWhiteSpace($itemCode)) {
-      Add-BodegaIssue $issues (New-BodegaIssue "B-0001" "CRITICO" "Trazabilidad" "OC sin identidad BOM completa" "OC $ocId no tiene matProjectId y bomItemCode trazables." "Carlos" "Regularizar el vinculo OC -> proyecto -> item BOM antes de nuevas recepciones." $ocId)
-    } elseif (-not $bomCodes.Contains($itemCode)) {
-      Add-BodegaIssue $issues (New-BodegaIssue "B-0002" "CRITICO" "Trazabilidad" "OC con item fuera del BOM activo" "OC $ocId usa item $itemCode, pero ese codigo no aparece en los BOM activos leidos." "Carlos" "Corregir itemCode o registrar excepcion autorizada por Carlos." $ocId)
+      Add-BodegaIssue $issues (New-BodegaIssue "B-0001" "CRITICO" "Trazabilidad" "OC sin proyecto o producto trazable" "OC $ocId no tiene proyecto y producto suficientes para seguir la compra." "Carlos" "Regularizar el proyecto o producto antes de nuevas recepciones." $ocId)
+    } elseif (-not $productKnown) {
+      Add-BodegaIssue $issues (New-BodegaIssue "B-0002" "CRITICO" "Trazabilidad" "OC con producto no reconocido" "OC $ocId usa producto $itemCode, pero no lo encontre como SKU activo ni como codigo historico linkeado." "Carlos" "Linkear a un SKU existente, crear SKU justificado o dejar pendiente." $ocId)
     }
     if ([string]::IsNullOrWhiteSpace($skuCode)) {
       $itemDesc = Get-FirstText $oc @("itemDesc", "descripcion", "description", "nombre", "name")
@@ -1395,7 +1402,7 @@ function Get-BodegaMaterialesAdminSkillDefinition {
       return [pscustomobject]@{
         key = "BMA-BOM-SKU-LINK"
         name = "Producto no identificado con seguridad"
-        condition = "Una OC, cotizacion o recepcion no tiene un producto de bodega claro, o el calce es dudoso."
+        condition = "Una OC, cotizacion o recepcion no tiene un SKU de bodega claro, o el calce es dudoso."
         action = "Proponer vincular a producto existente, crear producto justificado o dejar pendiente; no cambia inventario real ni recepciones por correo."
       }
     }
@@ -1803,7 +1810,7 @@ function New-BodegaMaterialesAdminProductChoiceSet {
   if ($choices.Count -eq 0) {
     return @(
       New-BodegaMaterialesAdminChoice -Key "A" -Label "Dejar pendiente para buscar producto correcto" -Value "BLOQUEAR_REVISION_PRODUCTO" -Effect "El agente no encontro candidatos claros; no recepcionar ni usar en costos hasta revisar." -Outcome "BLOQUEADO" -Recommended $true
-      New-BodegaMaterialesAdminChoice -Key "B" -Label "Autorizar excepcion" -Value "EXCEPCION_PRODUCTO_PROYECTO" -Effect "El producto si corresponde al proyecto, aunque no aparezca en el listado aprobado."
+      New-BodegaMaterialesAdminChoice -Key "B" -Label "Autorizar excepcion" -Value "EXCEPCION_PRODUCTO_PROYECTO" -Effect "El producto si corresponde, aunque el agente no lo haya podido reconocer automaticamente."
       New-BodegaMaterialesAdminChoice -Key "C" -Label "No hay problema" -Value "RECHAZAR_ALERTA" -Effect "Cerrar el caso porque la OC esta correcta." -Outcome "RECHAZADO"
     )
   }
@@ -1811,7 +1818,7 @@ function New-BodegaMaterialesAdminProductChoiceSet {
   $exceptionKey = @("B", "C", "D")[$next - 1]
   $pendingKey = @("C", "D", "E")[$next - 1]
   $rejectKey = @("D", "E", "F")[$next - 1]
-  $choices += New-BodegaMaterialesAdminChoice -Key $exceptionKey -Label "Autorizar excepcion" -Value "EXCEPCION_PRODUCTO_PROYECTO" -Effect "El producto actual si corresponde al proyecto, aunque no aparezca en el listado aprobado."
+  $choices += New-BodegaMaterialesAdminChoice -Key $exceptionKey -Label "Autorizar excepcion" -Value "EXCEPCION_PRODUCTO_PROYECTO" -Effect "El producto actual si corresponde, aunque el agente no lo haya podido reconocer automaticamente."
   $choices += New-BodegaMaterialesAdminChoice -Key $pendingKey -Label "Dejar pendiente para revision" -Value "BLOQUEAR_REVISION_PRODUCTO" -Effect "No recepcionar ni usar en costos hasta revisar el producto." -Outcome "BLOQUEADO"
   $choices += New-BodegaMaterialesAdminChoice -Key $rejectKey -Label "No hay problema" -Value "RECHAZAR_ALERTA" -Effect "Cerrar el caso porque la OC esta correcta." -Outcome "RECHAZADO"
   @($choices)
@@ -1843,7 +1850,7 @@ function Get-BodegaAdminFriendlyTitle {
   param([string]$CheckId, [string]$Title)
   switch -Wildcard ($CheckId) {
     "B-0001" { return "OC sin proyecto o producto claro" }
-    "B-0002" { return "OC con producto que no aparece en el listado aprobado" }
+    "B-0002" { return "OC con producto no reconocido" }
     "B-0003" { return "OC o recepcion sin producto claro en bodega" }
     "B-0004" { return "Producto nuevo parecido a uno del proyecto" }
     "B-0005" { return "Movimiento de bodega con datos incompletos" }
@@ -1904,7 +1911,7 @@ function Get-BodegaAdminFriendlyCopy {
   if ($qty) { $productLine = if ($productLine) { "$productLine - Cantidad: $qty" } else { "Cantidad: $qty" } }
   $problem = switch -Wildcard ($checkId) {
     "B-0001" { "Esta OC no queda claramente asociada a un proyecto y a un producto. Asi despues cuesta recepcionar y cargar el costo al proyecto correcto." }
-    "B-0002" { "Esta OC tiene un producto que no encontre en el listado aprobado de materiales del proyecto." }
+    "B-0002" { "Esta OC tiene un producto que no encontre como SKU activo de bodega ni como codigo historico linkeado." }
     "B-0003" { "No puedo identificar con seguridad que producto de bodega corresponde a esta compra o recepcion." }
     "B-0004" { "Hay un producto nuevo que se parece a uno del proyecto, pero no esta claramente vinculado." }
     "B-A04" { "Hay dos productos con descripciones muy parecidas. Podrian ser el mismo producto cargado dos veces." }
