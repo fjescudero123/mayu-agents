@@ -1975,6 +1975,15 @@ function New-BodegaMaterialesAdminCase {
     decision = $decision
     decidedBy = $decidedBy
     decidedAt = $decidedAt
+    selectedChoiceKey = [string](Get-AdminLearningField -Item $Existing -Name "selectedChoiceKey")
+    selectedChoiceLabel = [string](Get-AdminLearningField -Item $Existing -Name "selectedChoiceLabel")
+    selectedChoiceValue = [string](Get-AdminLearningField -Item $Existing -Name "selectedChoiceValue")
+    selectedChoiceEffect = [string](Get-AdminLearningField -Item $Existing -Name "selectedChoiceEffect")
+    learningId = [string](Get-AdminLearningField -Item $Existing -Name "learningId")
+    learningStatus = [string](Get-AdminLearningField -Item $Existing -Name "learningStatus")
+    learningSummary = [string](Get-AdminLearningField -Item $Existing -Name "learningSummary")
+    learningCondition = [string](Get-AdminLearningField -Item $Existing -Name "learningCondition")
+    learningAction = [string](Get-AdminLearningField -Item $Existing -Name "learningAction")
     checkId = $checkId
     level = [string]$Issue.level
     severity = [string]$Issue.severity
@@ -2543,6 +2552,80 @@ function Render-BodegaMaterialesAdminDetailHint {
 "@
 }
 
+function New-BodegaMaterialesAdminLearningCandidate {
+  param(
+    [object]$Case,
+    [object]$Decision,
+    [string]$Response,
+    [string]$From,
+    [datetime]$Now
+  )
+  $raw = Limit-AdminLearningText -Text $Response -Max 900
+  $choiceLabel = [string](Get-AdminLearningField -Item $Decision -Name "choiceLabel")
+  $choiceValue = [string](Get-AdminLearningField -Item $Decision -Name "choiceValue")
+  $skillKey = [string](Get-AdminLearningField -Item $Case -Name "skillKey")
+  if ([string]::IsNullOrWhiteSpace($skillKey)) { $skillKey = "BMA-CRITERIO-GENERAL" }
+  $condition = Get-AdminLearningConditionFromCase -Case $Case -Domain "Bodega + Materiales"
+  $action = if (-not [string]::IsNullOrWhiteSpace($choiceValue)) {
+    "Usar criterio '$choiceValue' ($choiceLabel). $([string](Get-AdminLearningField -Item $Decision -Name "choiceEffect"))"
+  } elseif ([string](Get-AdminLearningField -Item $Decision -Name "status") -eq "CORREGIDO") {
+    "Usar el criterio corregido por el responsable: $raw"
+  } else {
+    "Registrar la decision del responsable antes de actuar: $raw"
+  }
+  $exceptions = @(
+    "No cambia stock, costo promedio, recepciones, entregas a fabrica ni OCs por correo."
+    "No borrar movimientos con documento adjunto."
+    "Aplicar automaticamente solo si Felix y el responsable funcional activan la skill."
+  )
+  $summary = if ([string](Get-AdminLearningField -Item $Decision -Name "status") -eq "CORREGIDO") {
+    "Correccion recibida para $([string]$Case.mailCode): $raw"
+  } elseif ($choiceLabel) {
+    "$([string]$Case.mailCode): opcion $([string]$Decision.choiceKey) - $choiceLabel"
+  } else {
+    "$([string]$Case.mailCode): $raw"
+  }
+  $idBase = "$([string]$Case.id)|$skillKey|$choiceValue|$raw"
+  [pscustomobject][ordered]@{
+    id = "bma-learn-" + (Get-StableShortCode -Value $idBase)
+    domain = "bodega_materiales"
+    status = "CANDIDATA_POR_VALIDAR"
+    activationState = "OBSERVADA"
+    source = "email"
+    caseId = [string]$Case.id
+    mailCode = [string]$Case.mailCode
+    checkId = [string]$Case.checkId
+    level = [string]$Case.level
+    sourceCollection = [string]$Case.sourceCollection
+    sourceId = [string]$Case.sourceId
+    skillKey = $skillKey
+    skillName = [string](Get-AdminLearningField -Item $Case -Name "skillName")
+    condition = $condition
+    proposedAction = Limit-AdminLearningText -Text $action -Max 700
+    exceptions = $exceptions
+    summary = Limit-AdminLearningText -Text $summary -Max 700
+    rawResponse = $raw
+    selectedChoiceKey = [string](Get-AdminLearningField -Item $Decision -Name "choiceKey")
+    selectedChoiceLabel = $choiceLabel
+    selectedChoiceValue = $choiceValue
+    selectedChoiceEffect = [string](Get-AdminLearningField -Item $Decision -Name "choiceEffect")
+    decidedBy = $From
+    decidedAt = $Now.ToString("o")
+    approvedBy = ""
+    approvedAt = ""
+    autonomyLevel = 0
+    appliesTo = "Casos futuros; backlog historico requiere aprobacion por lote."
+    createdAt = $Now.ToString("o")
+    updatedAt = $Now.ToString("o")
+  }
+}
+
+function Save-BodegaMaterialesAdminLearningCandidate {
+  param([object]$Config, [string]$Token, [object]$Learning)
+  $collection = if ($Config.collections.bma_admin_learnings) { [string]$Config.collections.bma_admin_learnings } else { "bma_admin_learnings" }
+  Set-FirestoreDocument -Config $Config -Token $Token -CollectionName $collection -DocumentId ([string]$Learning.id) -Data $Learning
+}
+
 function Try-ProcessBodegaMaterialesAdminReply {
   param(
     [object]$Config,
@@ -2601,6 +2684,13 @@ function Try-ProcessBodegaMaterialesAdminReply {
     $case | Add-Member -NotePropertyName decidedAt -NotePropertyValue ($Now.ToString("o")) -Force
     $case | Add-Member -NotePropertyName decisionSource -NotePropertyValue "email" -Force
     $case | Add-Member -NotePropertyName replyMessageId -NotePropertyValue ([string]$Message.id) -Force
+    $learning = New-BodegaMaterialesAdminLearningCandidate -Case $case -Decision $decision -Response ([string]$item.response) -From $from -Now $Now
+    Save-BodegaMaterialesAdminLearningCandidate -Config $Config -Token $writeToken -Learning $learning
+    $case | Add-Member -NotePropertyName learningId -NotePropertyValue ([string]$learning.id) -Force
+    $case | Add-Member -NotePropertyName learningStatus -NotePropertyValue ([string]$learning.status) -Force
+    $case | Add-Member -NotePropertyName learningSummary -NotePropertyValue ([string]$learning.summary) -Force
+    $case | Add-Member -NotePropertyName learningCondition -NotePropertyValue ([string]$learning.condition) -Force
+    $case | Add-Member -NotePropertyName learningAction -NotePropertyValue ([string]$learning.proposedAction) -Force
     Set-FirestoreDocument -Config $Config -Token $writeToken -CollectionName $collection -DocumentId ([string]$case.id) -Data $case
     $updated += "$($case.mailCode) / $($case.title)"
     $decisionLabels += [string]$decision.label
@@ -3128,6 +3218,15 @@ function New-FinanzasAdminCase {
     decision = $decision
     decidedBy = $decidedBy
     decidedAt = $decidedAt
+    selectedChoiceKey = [string](Get-AdminLearningField -Item $Existing -Name "selectedChoiceKey")
+    selectedChoiceLabel = [string](Get-AdminLearningField -Item $Existing -Name "selectedChoiceLabel")
+    selectedChoiceValue = [string](Get-AdminLearningField -Item $Existing -Name "selectedChoiceValue")
+    selectedChoiceEffect = [string](Get-AdminLearningField -Item $Existing -Name "selectedChoiceEffect")
+    learningId = [string](Get-AdminLearningField -Item $Existing -Name "learningId")
+    learningStatus = [string](Get-AdminLearningField -Item $Existing -Name "learningStatus")
+    learningSummary = [string](Get-AdminLearningField -Item $Existing -Name "learningSummary")
+    learningCondition = [string](Get-AdminLearningField -Item $Existing -Name "learningCondition")
+    learningAction = [string](Get-AdminLearningField -Item $Existing -Name "learningAction")
     code = $Code
     severity = $Severity
     domain = $Domain
@@ -3163,6 +3262,42 @@ function Get-StableShortCode {
   } finally {
     $sha.Dispose()
   }
+}
+
+function Limit-AdminLearningText {
+  param([string]$Text, [int]$Max = 700)
+  $clean = ([string]$Text) -replace "\s+", " "
+  $clean = $clean.Trim()
+  if ($clean.Length -le $Max) { return $clean }
+  $clean.Substring(0, $Max).Trim()
+}
+
+function Get-AdminLearningField {
+  param([object]$Item, [string]$Name, [object]$Default = "")
+  if ($Item -and $Item.PSObject.Properties[$Name]) { return $Item.PSObject.Properties[$Name].Value }
+  $Default
+}
+
+function Get-AdminLearningSourceText {
+  param([object]$Case)
+  $parts = @(
+    [string](Get-AdminLearningField -Item $Case -Name "sourceLabel")
+    [string](Get-AdminLearningField -Item $Case -Name "simpleContext")
+    [string](Get-AdminLearningField -Item $Case -Name "simpleProduct")
+    [string](Get-AdminLearningField -Item $Case -Name "detail")
+    [string](Get-AdminLearningField -Item $Case -Name "simpleProblem")
+  ) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }
+  Limit-AdminLearningText -Text ($parts -join " | ") -Max 500
+}
+
+function Get-AdminLearningConditionFromCase {
+  param([object]$Case, [string]$Domain)
+  $code = [string](Get-AdminLearningField -Item $Case -Name "code" -Default (Get-AdminLearningField -Item $Case -Name "checkId"))
+  $skill = [string](Get-AdminLearningField -Item $Case -Name "skillName")
+  $source = Get-AdminLearningSourceText -Case $Case
+  $base = if ($skill) { "$Domain / $skill" } else { "$Domain / $code" }
+  if ($source) { return (Limit-AdminLearningText -Text "$base; patron observado: $source" -Max 650) }
+  $base
 }
 
 function Get-FinanzasAdminExistingMap {
@@ -4713,6 +4848,88 @@ function Render-FinanzasAdminReplyHint {
 "@
 }
 
+function New-FinanzasAdminLearningCandidate {
+  param(
+    [object]$Case,
+    [object]$Decision,
+    [string]$Response,
+    [string]$From,
+    [datetime]$Now
+  )
+  $raw = Limit-AdminLearningText -Text $Response -Max 900
+  $choiceLabel = [string](Get-AdminLearningField -Item $Decision -Name "choiceLabel")
+  $choiceValue = [string](Get-AdminLearningField -Item $Decision -Name "choiceValue")
+  $skillKey = [string](Get-AdminLearningField -Item $Case -Name "skillKey")
+  if ([string]::IsNullOrWhiteSpace($skillKey)) { $skillKey = "FIN-CRITERIO-GENERAL" }
+  $condition = Get-AdminLearningConditionFromCase -Case $Case -Domain "Finanzas"
+  $action = if (-not [string]::IsNullOrWhiteSpace($choiceValue)) {
+    "Usar criterio '$choiceValue' ($choiceLabel). $([string](Get-AdminLearningField -Item $Decision -Name "choiceEffect"))"
+  } elseif ([string](Get-AdminLearningField -Item $Decision -Name "status") -eq "CORREGIDO") {
+    "Usar el criterio corregido por Valentina: $raw"
+  } else {
+    "Registrar la decision antes de actuar: $raw"
+  }
+
+  $responseLower = $raw.ToLowerInvariant()
+  if ([string]$Case.code -eq "F-B02" -and $responseLower -match "sodimac" -and $responseLower -match "canje|factura") {
+    $condition = "Abonos bancarios con originador Sodimac/CCA y referencia a facturas o canje/saldo."
+    $action = "No clasificar como cobranza cliente simple. Revisar contra facturas Sodimac indicadas, registrar saldo/canje operativo y mantener evidencia antes de cerrar conciliacion."
+    $skillKey = "FIN-BAN-SODIMAC-CANJE"
+  }
+
+  $exceptions = @(
+    "No modifica caja, pagos, impuestos, cierres ni datos financieros sensibles por correo."
+    "No se activa automaticamente; requiere aprobacion explicita de Valentina."
+    "Aplicar automaticamente solo a casos futuros que calcen exactamente con la condicion aprobada."
+  )
+  $summary = if ([string](Get-AdminLearningField -Item $Decision -Name "status") -eq "CORREGIDO") {
+    "Correccion recibida para $([string]$Case.mailCode): $raw"
+  } elseif ($choiceLabel) {
+    "$([string]$Case.mailCode): opcion $([string]$Decision.choiceKey) - $choiceLabel"
+  } else {
+    "$([string]$Case.mailCode): $raw"
+  }
+  $idBase = "$([string]$Case.id)|$skillKey|$choiceValue|$raw"
+  [pscustomobject][ordered]@{
+    id = "fin-learn-" + (Get-StableShortCode -Value $idBase)
+    domain = "finanzas"
+    status = "CANDIDATA_POR_VALIDAR"
+    activationState = "OBSERVADA"
+    source = "email"
+    caseId = [string]$Case.id
+    mailCode = [string]$Case.mailCode
+    code = [string]$Case.code
+    severity = [string]$Case.severity
+    sourceCollection = [string]$Case.sourceCollection
+    sourceId = [string]$Case.sourceId
+    skillKey = $skillKey
+    skillName = [string](Get-AdminLearningField -Item $Case -Name "skillName")
+    condition = Limit-AdminLearningText -Text $condition -Max 700
+    proposedAction = Limit-AdminLearningText -Text $action -Max 700
+    exceptions = $exceptions
+    summary = Limit-AdminLearningText -Text $summary -Max 700
+    rawResponse = $raw
+    selectedChoiceKey = [string](Get-AdminLearningField -Item $Decision -Name "choiceKey")
+    selectedChoiceLabel = $choiceLabel
+    selectedChoiceValue = $choiceValue
+    selectedChoiceEffect = [string](Get-AdminLearningField -Item $Decision -Name "choiceEffect")
+    decidedBy = $From
+    decidedAt = $Now.ToString("o")
+    approvedBy = ""
+    approvedAt = ""
+    autonomyLevel = 0
+    appliesTo = "Casos futuros; backlog historico requiere aprobacion por lote."
+    createdAt = $Now.ToString("o")
+    updatedAt = $Now.ToString("o")
+  }
+}
+
+function Save-FinanzasAdminLearningCandidate {
+  param([object]$Config, [string]$Token, [object]$Learning)
+  $collection = if ($Config.collections.fin_admin_learnings) { [string]$Config.collections.fin_admin_learnings } else { "fin_admin_learnings" }
+  Set-FirestoreDocument -Config $Config -Token $Token -CollectionName $collection -DocumentId ([string]$Learning.id) -Data $Learning
+}
+
 function Try-ProcessFinanzasAdminReply {
   param(
     [object]$Config,
@@ -4765,6 +4982,13 @@ function Try-ProcessFinanzasAdminReply {
     $case | Add-Member -NotePropertyName decidedAt -NotePropertyValue ($Now.ToString("o")) -Force
     $case | Add-Member -NotePropertyName decisionSource -NotePropertyValue "email" -Force
     $case | Add-Member -NotePropertyName replyMessageId -NotePropertyValue ([string]$Message.id) -Force
+    $learning = New-FinanzasAdminLearningCandidate -Case $case -Decision $decision -Response ([string]$item.response) -From $from -Now $Now
+    Save-FinanzasAdminLearningCandidate -Config $Config -Token $writeToken -Learning $learning
+    $case | Add-Member -NotePropertyName learningId -NotePropertyValue ([string]$learning.id) -Force
+    $case | Add-Member -NotePropertyName learningStatus -NotePropertyValue ([string]$learning.status) -Force
+    $case | Add-Member -NotePropertyName learningSummary -NotePropertyValue ([string]$learning.summary) -Force
+    $case | Add-Member -NotePropertyName learningCondition -NotePropertyValue ([string]$learning.condition) -Force
+    $case | Add-Member -NotePropertyName learningAction -NotePropertyValue ([string]$learning.proposedAction) -Force
     Set-FirestoreDocument -Config $Config -Token $writeToken -CollectionName $collection -DocumentId ([string]$case.id) -Data $case
     $updated += "$($case.mailCode) / $($case.title)"
     $decisionLabels += [string]$decision.label

@@ -66,7 +66,9 @@
     "fin_importaciones": "fin_importaciones",
     "fin_dte_inbox": "fin_dte_inbox",
     "fin_admin_cases": "fin_admin_cases",
-    "bma_admin_cases": "bma_admin_cases"
+    "fin_admin_learnings": "fin_admin_learnings",
+    "bma_admin_cases": "bma_admin_cases",
+    "bma_admin_learnings": "bma_admin_learnings"
   },
   "doc_requirements": {
     "bom": { "area": "ingenieria", "doc_ids": ["i1"], "owner": "Martin" },
