@@ -2687,7 +2687,17 @@ function Get-FinanceIssues {
   function Get-LatestImportFinanzas([object[]]$Rows, [string]$Tipo) {
     @($Rows | Where-Object { [string]$_.tipo -eq $Tipo } | Sort-Object { -1 * (Get-Number $_.createdAt) } | Select-Object -First 1)
   }
-  function Add-FuenteFinancieraIssue([string]$Nombre, [string]$TipoImportacion, [string]$FechaMaxima, [int]$DiasRojo, [int]$DiasAmarillo) {
+  function Get-BusinessDaysBetween([datetime]$Start, [datetime]$End) {
+    $startDate = $Start.Date
+    $endDate = $End.Date
+    if ($endDate -le $startDate) { return 0 }
+    $days = 0
+    for ($d = $startDate.AddDays(1); $d -le $endDate; $d = $d.AddDays(1)) {
+      if ($d.DayOfWeek -ne [DayOfWeek]::Saturday -and $d.DayOfWeek -ne [DayOfWeek]::Sunday) { $days++ }
+    }
+    $days
+  }
+  function Add-FuenteFinancieraIssue([string]$Nombre, [string]$TipoImportacion, [string]$FechaMaxima, [int]$DiasRojo, [int]$DiasAmarillo, [bool]$UsarDiasHabiles = $false) {
     $latest = @(Get-LatestImportFinanzas -Rows @($Data.fin_importaciones) -Tipo $TipoImportacion | Select-Object -First 1)
     $archivo = if ($latest.Count -gt 0) { [string]$latest[0].archivo } else { "sin registro de importacion" }
     $importado = "sin fecha"
@@ -2695,18 +2705,20 @@ function Get-FinanceIssues {
     if ($latest.Count -gt 0 -and $latest[0].createdAt) {
       $importDate = ([DateTimeOffset]::FromUnixTimeMilliseconds([int64](Get-Number $latest[0].createdAt))).Date
       $importado = $importDate.ToString("yyyy-MM-dd")
-      $diasImportacion = [int](New-TimeSpan -Start $importDate -End $Now.Date).TotalDays
+      $diasImportacion = if ($UsarDiasHabiles) { Get-BusinessDaysBetween -Start $importDate -End $Now.Date } else { [int](New-TimeSpan -Start $importDate -End $Now.Date).TotalDays }
       if ($diasImportacion -lt $DiasAmarillo) { return }
     }
     if ([string]::IsNullOrWhiteSpace($FechaMaxima)) {
       Add-Issue $issues (New-FinanceIssue -Code "F-D01" -Severity "rojo" -Area "Datos Finanzas" -Title "Fuente sin datos: $Nombre" -Detail "No hay datos cargados para $Nombre. Ultima importacion registrada: $archivo, importada $importado." -Owner "Valentina" -Action "Revisar la automatizacion o importar archivo actualizado en Finanzas > Importar." -Ref "fin_importaciones")
       return
     }
-    $dias = [int](New-TimeSpan -Start ([datetime]::Parse($FechaMaxima)) -End $Now.Date).TotalDays
+    $fechaMaxDate = ([datetime]::Parse($FechaMaxima)).Date
+    $dias = if ($UsarDiasHabiles) { Get-BusinessDaysBetween -Start $fechaMaxDate -End $Now.Date } else { [int](New-TimeSpan -Start $fechaMaxDate -End $Now.Date).TotalDays }
     if ($dias -lt $DiasAmarillo -and $null -eq $diasImportacion) { return }
     $diasBase = if ($null -ne $diasImportacion) { $diasImportacion } else { $dias }
     $sev = if ($diasBase -ge $DiasRojo) { "rojo" } else { "amarillo" }
-    Add-Issue $issues (New-FinanceIssue -Code "F-D02" -Severity $sev -Area "Datos Finanzas" -Title "Fuente desactualizada: $Nombre" -Detail "$Nombre tuvo su ultima importacion el $importado. Ultimo documento en datos: $FechaMaxima ($dias dia(s) sin documentos nuevos). Archivo/fuente: $archivo." -Owner "Valentina" -Action "Revisar que la automatizacion de la fuente este corriendo; si corrio sin novedades, no corresponde cierre contable sino solo seguimiento de fuente." -Ref "fin_importaciones")
+    $diasTexto = if ($UsarDiasHabiles) { "dia(s) habil(es)" } else { "dia(s)" }
+    Add-Issue $issues (New-FinanceIssue -Code "F-D02" -Severity $sev -Area "Datos Finanzas" -Title "Fuente desactualizada: $Nombre" -Detail "$Nombre tuvo su ultima importacion el $importado. Ultimo documento en datos: $FechaMaxima ($dias $diasTexto sin documentos nuevos). Archivo/fuente: $archivo." -Owner "Valentina" -Action "Revisar que la automatizacion de la fuente este corriendo; si corrio sin novedades, no corresponde cierre contable sino solo seguimiento de fuente." -Ref "fin_importaciones")
   }
   function Test-NotaCreditoFinanzas([object]$Factura) {
     $tipo = [int](Get-Number $Factura.tipoDte)
@@ -2759,7 +2771,7 @@ function Get-FinanceIssues {
   }
   $diasRojo = [int](Get-Number $Config.thresholds.finance_source_stale_days_red 7)
   $diasAmarillo = [int](Get-Number $Config.thresholds.finance_source_stale_days_yellow 3)
-  Add-FuenteFinancieraIssue -Nombre "Cartola BICE" -TipoImportacion "CARTOLA_BICE" -FechaMaxima (Get-MaxIsoDateFinanzas -Rows @($Data.fin_mov_bancarios) -FieldName "fecha") -DiasRojo $diasRojo -DiasAmarillo $diasAmarillo
+  Add-FuenteFinancieraIssue -Nombre "Cartola BICE" -TipoImportacion "CARTOLA_BICE" -FechaMaxima (Get-MaxIsoDateFinanzas -Rows @($Data.fin_mov_bancarios) -FieldName "fecha") -DiasRojo $diasRojo -DiasAmarillo $diasAmarillo -UsarDiasHabiles $true
   Add-FuenteFinancieraIssue -Nombre "RCV Compras" -TipoImportacion "RCV_COMPRAS" -FechaMaxima (Get-MaxIsoDateFinanzas -Rows @($Data.fin_facturas_ap) -FieldName "fechaEmision") -DiasRojo $diasRojo -DiasAmarillo $diasAmarillo
   Add-FuenteFinancieraIssue -Nombre "RCV Ventas" -TipoImportacion "RCV_VENTAS" -FechaMaxima (Get-MaxIsoDateFinanzas -Rows @($Data.fin_facturas_ar) -FieldName "fechaEmision") -DiasRojo $diasRojo -DiasAmarillo $diasAmarillo
   $maxOverdue = [int]$Config.thresholds.max_finance_overdue_items
@@ -3985,15 +3997,24 @@ function Render-BiceCartolaMailHtml {
     "<tr><td style='border:1px solid #ddd;padding:6px;'>$(HtmlEscape $_.fecha)</td><td style='border:1px solid #ddd;padding:6px;'>$(HtmlEscape $_.direccion)</td><td style='border:1px solid #ddd;padding:6px;text-align:right;'>$(Format-Clp (Get-Number $_.monto))</td><td style='border:1px solid #ddd;padding:6px;'>$(HtmlEscape $_.estado)</td><td style='border:1px solid #ddd;padding:6px;'>$(HtmlEscape $_.descripcion)</td></tr>"
   }) -join ""
   if (-not $candidateRows) { $candidateRows = "<tr><td colspan='5' style='border:1px solid #ddd;padding:8px;color:#666;'>Sin filas legibles con fecha y monto.</td></tr>" }
+  $latestText = if ([string]::IsNullOrWhiteSpace([string]$Report.summary.latestMovementDate)) { "sin fecha leida" } else { [string]$Report.summary.latestMovementDate }
+  $statusText = if ((Get-Number $Report.summary.messagesFound) -gt 0) {
+    "Ultima cartola leida: $latestText. Movimientos nuevos creados en Finanzas: $($Report.summary.created)."
+  } else {
+    "No se encontraron correos BICE en la ventana revisada."
+  }
   $metrics = @(
     New-MayuEmailMetric -Label "Correos" -Value $Report.summary.messagesFound -Tone "info"
     New-MayuEmailMetric -Label "Adjuntos" -Value $Report.summary.attachmentsSaved -Tone "info"
     New-MayuEmailMetric -Label "Filas leidas" -Value $Report.summary.rowsParsed -Tone "info"
+    New-MayuEmailMetric -Label "Ultima fecha" -Value $latestText -Tone "info"
     New-MayuEmailMetric -Label "Nuevos probables" -Value $Report.summary.newCandidates -Tone "amarillo"
+    New-MayuEmailMetric -Label "Creados" -Value $Report.summary.created -Tone "verde"
     New-MayuEmailMetric -Label "Duplicados" -Value $Report.summary.duplicates -Tone "verde"
   ) -join ""
   $content = @"
 <table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin:0 0 10px 0;"><tr>$metrics</tr></table>
+<div style="border:1px solid #d8dee9;border-left:4px solid #1f6feb;background:#f4f7fb;padding:12px 14px;margin:0 0 12px 0;color:#1f2937;"><strong>Estado:</strong> $(HtmlEscape $statusText)</div>
 <p style="margin:0 0 12px 0;color:#4b5563;">Modo productivo: este agente lee BICE por correo, guarda respaldo, deduplica y crea solo movimientos bancarios nuevos con direccion clara. No marca correos como leidos.</p>
 <h3 style="font-size:16px;margin:18px 0 8px 0;">Correos revisados</h3>
 <table style="border-collapse:collapse;width:100%;font-size:13px;"><tr><th style='border:1px solid #ddd;padding:6px;text-align:left;'>Recibido</th><th style='border:1px solid #ddd;padding:6px;text-align:left;'>De</th><th style='border:1px solid #ddd;padding:6px;text-align:left;'>Asunto</th><th style='border:1px solid #ddd;padding:6px;text-align:right;'>Adj.</th></tr>$messageRows</table>
@@ -4004,7 +4025,7 @@ function Render-BiceCartolaMailHtml {
 }
 
 function Invoke-BiceCartolaMail {
-  param([object]$Config, [string]$GraphToken, [string]$SiteId, [datetime]$Now)
+  param([object]$Config, [string]$GraphToken, [string]$SiteId, [datetime]$Now, [bool]$DoSendEmail = $false)
   $mailbox = [string]$Config.mail.sender
   $folder = [string]$Config.sharepoint.bice_cartolas_folder
   $account = [string]$Config.agents.bice_cartola_mail.account
@@ -4021,6 +4042,10 @@ function Invoke-BiceCartolaMail {
   $data = Get-FirestoreData -Config $Config
   $writeToken = Get-FirestoreWriteToken -Config $Config
   $bankRows = @($data.fin_mov_bancarios)
+  $existingTodayBiceImports = @($data.fin_importaciones | Where-Object {
+    [string]$_.tipo -eq "CARTOLA_BICE" -and [string]$_.origen -eq "BICE_EMAIL" -and $_.createdAt -and
+    ([DateTimeOffset]::FromUnixTimeMilliseconds([int64](Get-Number $_.createdAt))).Date -eq $Now.Date
+  })
   $saved = @()
   $parsedRows = @()
   $messageSummary = @()
@@ -4101,6 +4126,7 @@ function Invoke-BiceCartolaMail {
     $created++
   }
   $latestDate = @($parsedRows | ForEach-Object { [string]$_.fecha } | Where-Object { $_ } | Sort-Object | Select-Object -Last 1)
+  $latestMovementDate = if ($latestDate.Count -gt 0) { [string]$latestDate[0] } else { "" }
   $periodo = if ($latestDate.Count -gt 0 -and $latestDate[0] -match "^(\d{4})-(\d{2})-") { "$($Matches[1])-$($Matches[2])" } else { $Now.ToString("yyyy-MM") }
   $importId = Add-FirestoreDocument -Config $Config -Token $writeToken -CollectionName ([string]$Config.collections.fin_importaciones) -Data ([pscustomobject]@{
     tipo = "CARTOLA_BICE"
@@ -4134,6 +4160,7 @@ function Invoke-BiceCartolaMail {
       duplicatedInRun = @($candidates | Where-Object { $_.estado -eq "DUPLICADO_EN_ARCHIVOS_BICE" }).Count
       reviewDirection = @($candidates | Where-Object { $_.estado -eq "REVISION_DIRECCION" }).Count
       firestoreBankRows = @($bankRows).Count
+      latestMovementDate = $latestMovementDate
     }
     messages = $messageSummary
     attachments = $saved
@@ -4154,7 +4181,19 @@ function Invoke-BiceCartolaMail {
     Write-Output "BICE adjunto: nombre='$($attRow.name)' status=$($attRow.status) filas=$($attRow.rowsParsed) size=$($attRow.size) contentType='$($attRow.contentType)'."
   }
   Write-Output "BICE cartola mail: correos=$($report.summary.messagesFound) adjuntos=$($report.summary.attachmentsSaved) filas=$($report.summary.rowsParsed) nuevos=$($report.summary.newCandidates) creados=$created duplicados=$($report.summary.duplicates) duplicados_lote=$($report.summary.duplicatedInRun)."
-  Write-Output "BICE cartola mail: importId=$importId outputs guardados en $folder. No se envio correo y no se marcaron correos como leidos."
+  $shouldSendSummary = $DoSendEmail -and ($existingTodayBiceImports.Count -eq 0 -or $created -gt 0)
+  if ($shouldSendSummary) {
+    $to = Get-UniqueEmails -Emails @($Config.mail.felix, $Config.mail.valentina)
+    $latestSubject = if ([string]::IsNullOrWhiteSpace($latestMovementDate)) { "sin fecha leida" } else { $latestMovementDate }
+    $subject = "[MAYU Finanzas] Banco BICE: $created movimientos nuevos - hasta $latestSubject"
+    Send-GraphMail -Token $GraphToken -Sender $Config.mail.sender -To $to -Cc @() -Subject $subject -HtmlBody $html
+    Write-Output "BICE cartola mail: correo enviado a $($to -join ', ')."
+  } elseif ($DoSendEmail) {
+    Write-Output "BICE cartola mail: resumen ya emitido hoy y sin movimientos nuevos; no se envia correo duplicado."
+  } else {
+    Write-Output "BICE cartola mail: SendEmail=false, no se envia correo."
+  }
+  Write-Output "BICE cartola mail: importId=$importId outputs guardados en $folder. No se marcaron correos como leidos."
 }
 
 function Invoke-Finanzas {
@@ -5256,5 +5295,5 @@ if ($Mode -eq "test") {
 } elseif ($Mode -eq "finanzas_respuestas") {
   Invoke-FinanzasResponder -Config $config -GraphToken $graphToken -SiteId $siteId -Now $now
 } elseif ($Mode -eq "bice_cartola_mail") {
-  Invoke-BiceCartolaMail -Config $config -GraphToken $graphToken -SiteId $siteId -Now $now
+  Invoke-BiceCartolaMail -Config $config -GraphToken $graphToken -SiteId $siteId -Now $now -DoSendEmail $SendEmail
 }
