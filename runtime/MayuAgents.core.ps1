@@ -1381,8 +1381,8 @@ function Get-BodegaMaterialesAdminSkillDefinition {
     "B-A04" {
       return [pscustomobject]@{
         key = "BMA-SKU-DUPLICADO"
-        name = "SKU posiblemente duplicado"
-        condition = "Dos SKUs tienen descripcion casi identica y no hay evidencia clara de diferencia fisica."
+        name = "Productos posiblemente duplicados"
+        condition = "Dos productos tienen descripcion casi identica y no hay evidencia clara de diferencia fisica."
         action = "Proponer unificar, diferenciar descripcion o bloquear; nunca mueve stock automaticamente sin regla aprobada."
       }
     }
@@ -1394,9 +1394,9 @@ function Get-BodegaMaterialesAdminSkillDefinition {
     "BMA-BOM-SKU-LINK" {
       return [pscustomobject]@{
         key = "BMA-BOM-SKU-LINK"
-        name = "Vinculo BOM / OC / recepcion / SKU"
-        condition = "Item BOM, OC, cotizacion o recepcion sin SKU real o con match dudoso."
-        action = "Proponer link a SKU existente, crear SKU justificado o bloquear; no cambia inventario real ni recepciones por correo."
+        name = "Producto no identificado con seguridad"
+        condition = "Una OC, cotizacion o recepcion no tiene un producto de bodega claro, o el calce es dudoso."
+        action = "Proponer vincular a producto existente, crear producto justificado o dejar pendiente; no cambia inventario real ni recepciones por correo."
       }
     }
     "B-C01" {
@@ -1435,7 +1435,7 @@ function Get-BodegaMaterialesAdminSkillDefinition {
       return [pscustomobject]@{
         key = "BMA-ENTREGA-FABRICA"
         name = "Entrega formal a fabrica"
-        condition = "Entrega sin trazabilidad a SKU/proyecto/POD."
+        condition = "Entrega sin producto/proyecto/POD claro."
         action = "Proponer regularizar datos de entrega; no crea salidas de stock sin autorizacion de Carlos."
       }
     }
@@ -1443,7 +1443,7 @@ function Get-BodegaMaterialesAdminSkillDefinition {
       return [pscustomobject]@{
         key = "BMA-STOCK-COSTO-CERO"
         name = "Stock con costo cero"
-        condition = "SKU tiene stock positivo y costo promedio cero o placeholder."
+        condition = "Producto tiene stock positivo y costo promedio cero o placeholder."
         action = "Proponer valorizar contra factura/guia o bloquear uso en costos; Valentina valida discrepancias de costo."
       }
     }
@@ -1514,24 +1514,24 @@ function Get-BodegaMaterialesAdminChoiceSet {
       return @(
         New-BodegaMaterialesAdminChoice -Key "A" -Label "Corregir proveedor real en la OC" -Value "CORREGIR_PROVEEDOR_REAL" -Effect "Registrar criterio para corregir el proveedor real sin tocar cantidades, precios ni recepciones." -Recommended $true
         New-BodegaMaterialesAdminChoice -Key "B" -Label "Mantener como compra directa justificada" -Value "COMPRA_DIRECTA_JUSTIFICADA" -Effect "Dejar excepcion documentada; no se corrige proveedor en este caso."
-        New-BodegaMaterialesAdminChoice -Key "C" -Label "Bloquear hasta identificar proveedor" -Value "BLOQUEAR_PROVEEDOR" -Effect "Mantener caso bloqueado hasta que Carlos/Mauricio identifiquen proveedor real." -Outcome "BLOQUEADO"
-        New-BodegaMaterialesAdminChoice -Key "D" -Label "Rechazar alerta: proveedor correcto" -Value "RECHAZAR_ALERTA" -Effect "Cerrar aprendizaje para este caso como falso positivo." -Outcome "RECHAZADO"
+        New-BodegaMaterialesAdminChoice -Key "C" -Label "Dejar pendiente hasta identificar proveedor" -Value "BLOQUEAR_PROVEEDOR" -Effect "Mantener pendiente hasta saber el proveedor real." -Outcome "BLOQUEADO"
+        New-BodegaMaterialesAdminChoice -Key "D" -Label "No hay problema" -Value "RECHAZAR_ALERTA" -Effect "Cerrar el caso porque el proveedor esta correcto." -Outcome "RECHAZADO"
       )
     }
     "B-A04" {
       return @(
-        New-BodegaMaterialesAdminChoice -Key "A" -Label "Unificar SKUs equivalentes" -Value "UNIFICAR_SKU" -Effect "Preparar criterio de unificacion; no mueve stock automaticamente." -Recommended $true
+        New-BodegaMaterialesAdminChoice -Key "A" -Label "Unificar productos equivalentes" -Value "UNIFICAR_SKU" -Effect "Registrar que son el mismo producto; no mueve stock automaticamente." -Recommended $true
         New-BodegaMaterialesAdminChoice -Key "B" -Label "Mantener ambos y diferenciar descripcion" -Value "DIFERENCIAR_DESCRIPCION" -Effect "Registrar que son productos distintos y pedir descripcion mas clara."
-        New-BodegaMaterialesAdminChoice -Key "C" -Label "Bloquear hasta revision fisica" -Value "BLOQUEAR_REVISION_FISICA" -Effect "Mauricio/Carlos deben revisar medida, marca y uso real." -Outcome "BLOQUEADO"
-        New-BodegaMaterialesAdminChoice -Key "D" -Label "Rechazar alerta" -Value "RECHAZAR_ALERTA" -Effect "Descartar como falso positivo." -Outcome "RECHAZADO"
+        New-BodegaMaterialesAdminChoice -Key "C" -Label "Dejar pendiente para revision fisica" -Value "BLOQUEAR_REVISION_FISICA" -Effect "Revisar medida, marca y uso real antes de decidir." -Outcome "BLOQUEADO"
+        New-BodegaMaterialesAdminChoice -Key "D" -Label "No hay problema" -Value "RECHAZAR_ALERTA" -Effect "Cerrar el caso porque los productos estan correctamente separados." -Outcome "RECHAZADO"
       )
     }
     "B-A05" {
       return @(
         New-BodegaMaterialesAdminChoice -Key "A" -Label "Valorizar con factura o guia" -Value "VALORIZAR_DOCUMENTO_FISICO" -Effect "Usar documento fisico como fuente de costo; Valentina valida si afecta CxP." -Recommended $true
         New-BodegaMaterialesAdminChoice -Key "B" -Label "Stock inicial sin costo historico" -Value "STOCK_INICIAL_SIN_COSTO" -Effect "Mantener como excepcion historica documentada."
-        New-BodegaMaterialesAdminChoice -Key "C" -Label "Bloquear uso en costos" -Value "BLOQUEAR_USO_COSTOS" -Effect "No usar este SKU para costo de proyecto hasta valorizar." -Outcome "BLOQUEADO"
-        New-BodegaMaterialesAdminChoice -Key "D" -Label "Rechazar alerta" -Value "RECHAZAR_ALERTA" -Effect "Costo cero es correcto para este caso." -Outcome "RECHAZADO"
+        New-BodegaMaterialesAdminChoice -Key "C" -Label "No usar en costos todavia" -Value "BLOQUEAR_USO_COSTOS" -Effect "Dejar pendiente hasta tener costo confiable." -Outcome "BLOQUEADO"
+        New-BodegaMaterialesAdminChoice -Key "D" -Label "No hay problema" -Value "RECHAZAR_ALERTA" -Effect "Cerrar el caso porque el costo cero es correcto." -Outcome "RECHAZADO"
       )
     }
     "B-C01" {
@@ -1546,8 +1546,24 @@ function Get-BodegaMaterialesAdminChoiceSet {
       return @(
         New-BodegaMaterialesAdminChoice -Key "A" -Label "Vincular cotizacion formal" -Value "VINCULAR_COTIZACION" -Effect "Regularizar respaldo de la OC antes de nuevas recepciones." -Recommended $true
         New-BodegaMaterialesAdminChoice -Key "B" -Label "Compra directa justificada" -Value "COMPRA_DIRECTA_JUSTIFICADA" -Effect "Registrar motivo de compra directa y responsable."
-        New-BodegaMaterialesAdminChoice -Key "C" -Label "Bloquear OC" -Value "BLOQUEAR_OC" -Effect "Mantener pendiente hasta respaldo suficiente." -Outcome "BLOQUEADO"
-        New-BodegaMaterialesAdminChoice -Key "D" -Label "Rechazar alerta" -Value "RECHAZAR_ALERTA" -Effect "La OC si tiene respaldo o no requiere cotizacion." -Outcome "RECHAZADO"
+        New-BodegaMaterialesAdminChoice -Key "C" -Label "Dejar pendiente" -Value "BLOQUEAR_OC" -Effect "No avanzar hasta tener respaldo suficiente." -Outcome "BLOQUEADO"
+        New-BodegaMaterialesAdminChoice -Key "D" -Label "No hay problema" -Value "RECHAZAR_ALERTA" -Effect "La OC si tiene respaldo o no requiere cotizacion." -Outcome "RECHAZADO"
+      )
+    }
+    "B-0001" {
+      return @(
+        New-BodegaMaterialesAdminChoice -Key "A" -Label "Corregir proyecto o producto de la OC" -Value "CORREGIR_IDENTIDAD_OC" -Effect "Regularizar a que proyecto y producto corresponde; no cambia stock." -Recommended $true
+        New-BodegaMaterialesAdminChoice -Key "B" -Label "Autorizar excepcion" -Value "EXCEPCION_AUTORIZADA" -Effect "Registrar que la OC se acepta asi por decision de Carlos."
+        New-BodegaMaterialesAdminChoice -Key "C" -Label "Dejar pendiente" -Value "BLOQUEAR_IDENTIDAD_OC" -Effect "No recepcionar hasta saber proyecto y producto." -Outcome "BLOQUEADO"
+        New-BodegaMaterialesAdminChoice -Key "D" -Label "No hay problema" -Value "RECHAZAR_ALERTA" -Effect "Cerrar el caso porque la OC esta correcta." -Outcome "RECHAZADO"
+      )
+    }
+    "B-0002" {
+      return @(
+        New-BodegaMaterialesAdminChoice -Key "A" -Label "Corregir producto en la OC" -Value "CORREGIR_PRODUCTO_OC" -Effect "La OC apunta a un producto equivocado; registrar que debe corregirse." -Recommended $true
+        New-BodegaMaterialesAdminChoice -Key "B" -Label "Autorizar excepcion" -Value "EXCEPCION_PRODUCTO_PROYECTO" -Effect "El producto si corresponde al proyecto, aunque no aparezca en el listado aprobado."
+        New-BodegaMaterialesAdminChoice -Key "C" -Label "Dejar pendiente para revision" -Value "BLOQUEAR_REVISION_PRODUCTO" -Effect "No recepcionar ni usar en costos hasta revisar el producto." -Outcome "BLOQUEADO"
+        New-BodegaMaterialesAdminChoice -Key "D" -Label "No hay problema" -Value "RECHAZAR_ALERTA" -Effect "Cerrar el caso porque la OC esta correcta." -Outcome "RECHAZADO"
       )
     }
     "B-0003" { return Get-BodegaMaterialesAdminChoiceSet -CheckId "BMA-BOM-SKU-LINK" }
@@ -1557,11 +1573,11 @@ function Get-BodegaMaterialesAdminChoiceSet {
     "B-C05"  { return Get-BodegaMaterialesAdminChoiceSet -CheckId "BMA-BOM-SKU-LINK" }
     "BMA-BOM-SKU-LINK" {
       return @(
-        New-BodegaMaterialesAdminChoice -Key "A" -Label "Linkear a SKU/BOM existente" -Value "LINKEAR_SKU_EXISTENTE" -Effect "Preparar criterio de linkeo; Mauricio/Carlos validan identidad fisica." -Recommended $true
-        New-BodegaMaterialesAdminChoice -Key "B" -Label "Crear SKU nuevo justificado" -Value "CREAR_SKU_JUSTIFICADO" -Effect "Solo si no existe SKU equivalente; debe quedar motivo y responsable."
-        New-BodegaMaterialesAdminChoice -Key "C" -Label "Corregir match de cotizacion/BOM" -Value "CORREGIR_MATCH_BOM" -Effect "Reasignar linea al BOM correcto o descartar linea no aplicable."
-        New-BodegaMaterialesAdminChoice -Key "D" -Label "Bloquear hasta revision" -Value "BLOQUEAR_IDENTIDAD" -Effect "No recepcionar ni usar en costo hasta resolver identidad." -Outcome "BLOQUEADO"
-        New-BodegaMaterialesAdminChoice -Key "E" -Label "Rechazar alerta" -Value "RECHAZAR_ALERTA" -Effect "La identidad actual es correcta." -Outcome "RECHAZADO"
+        New-BodegaMaterialesAdminChoice -Key "A" -Label "Vincular a producto existente" -Value "LINKEAR_SKU_EXISTENTE" -Effect "Usar un producto que ya existe en bodega, si es el mismo fisicamente." -Recommended $true
+        New-BodegaMaterialesAdminChoice -Key "B" -Label "Crear producto nuevo" -Value "CREAR_SKU_JUSTIFICADO" -Effect "Solo si no existe un producto equivalente; debe quedar motivo y responsable."
+        New-BodegaMaterialesAdminChoice -Key "C" -Label "Corregir producto asociado" -Value "CORREGIR_MATCH_BOM" -Effect "La linea quedo asociada al producto equivocado; registrar que debe corregirse."
+        New-BodegaMaterialesAdminChoice -Key "D" -Label "Dejar pendiente para revision" -Value "BLOQUEAR_IDENTIDAD" -Effect "No recepcionar ni usar en costos hasta identificar el producto." -Outcome "BLOQUEADO"
+        New-BodegaMaterialesAdminChoice -Key "E" -Label "No hay problema" -Value "RECHAZAR_ALERTA" -Effect "Cerrar el caso porque el producto esta correctamente identificado." -Outcome "RECHAZADO"
       )
     }
     "B-E08" {
@@ -1578,8 +1594,8 @@ function Get-BodegaMaterialesAdminChoiceSet {
         New-BodegaMaterialesAdminChoice -Key "A" -Label "Registrar entrega formal" -Value "REGISTRAR_ENTREGA_FORMAL" -Effect "Carlos autoriza; Mauricio registra salida con POD/tipologia." -Recommended $true
         New-BodegaMaterialesAdminChoice -Key "B" -Label "Mantener stock retenido documentado" -Value "STOCK_RETENIDO" -Effect "No hay entrega aun; dejar motivo y fecha esperada."
         New-BodegaMaterialesAdminChoice -Key "C" -Label "Regularizar merma" -Value "REGULARIZAR_MERMA" -Effect "Documentar motivo de merma y responsable."
-        New-BodegaMaterialesAdminChoice -Key "D" -Label "Bloquear hasta autorizacion Carlos" -Value "BLOQUEAR_ENTREGA" -Effect "No registrar entrega hasta autorizacion." -Outcome "BLOQUEADO"
-        New-BodegaMaterialesAdminChoice -Key "E" -Label "Rechazar alerta" -Value "RECHAZAR_ALERTA" -Effect "La entrega o stock esta correctamente documentado." -Outcome "RECHAZADO"
+        New-BodegaMaterialesAdminChoice -Key "D" -Label "Dejar pendiente hasta autorizacion Carlos" -Value "BLOQUEAR_ENTREGA" -Effect "No registrar entrega hasta autorizacion." -Outcome "BLOQUEADO"
+        New-BodegaMaterialesAdminChoice -Key "E" -Label "No hay problema" -Value "RECHAZAR_ALERTA" -Effect "Cerrar el caso porque la entrega o el stock esta correctamente documentado." -Outcome "RECHAZADO"
       )
     }
     "B-0007" { return Get-BodegaMaterialesAdminChoiceSet -CheckId "B-F01" }
@@ -1600,10 +1616,10 @@ function Get-BodegaMaterialesAdminChoiceSet {
     }
     default {
       return @(
-        New-BodegaMaterialesAdminChoice -Key "A" -Label "Aprobar propuesta del agente" -Value "APROBAR_PROPUESTA" -Effect "Registrar criterio para este caso; no ejecuta cambios sensibles." -Outcome "APROBADO"
+        New-BodegaMaterialesAdminChoice -Key "A" -Label "Estoy de acuerdo con la propuesta" -Value "APROBAR_PROPUESTA" -Effect "Registrar criterio para este caso; no ejecuta cambios en la app." -Outcome "APROBADO"
         New-BodegaMaterialesAdminChoice -Key "B" -Label "Corregir criterio" -Value "CORREGIR_CRITERIO" -Effect "Responder con el criterio correcto para que el agente aprenda." -Outcome "CORREGIDO"
-        New-BodegaMaterialesAdminChoice -Key "C" -Label "Bloquear" -Value "BLOQUEAR_REVISION" -Effect "Mantener pendiente hasta revision manual." -Outcome "BLOQUEADO"
-        New-BodegaMaterialesAdminChoice -Key "D" -Label "Rechazar" -Value "RECHAZAR_PROPUESTA" -Effect "Descartar propuesta para este caso." -Outcome "RECHAZADO"
+        New-BodegaMaterialesAdminChoice -Key "C" -Label "Dejar pendiente" -Value "BLOQUEAR_REVISION" -Effect "Mantener pendiente hasta revision manual." -Outcome "BLOQUEADO"
+        New-BodegaMaterialesAdminChoice -Key "D" -Label "No hay problema" -Value "RECHAZAR_PROPUESTA" -Effect "Cerrar este caso como no aplicable." -Outcome "RECHAZADO"
       )
     }
   }
@@ -1621,6 +1637,13 @@ function Get-BodegaMaterialesAdminExistingMap {
 function Get-BodegaMaterialesAdminSourceCollection {
   param([string]$CheckId)
   switch -Wildcard ($CheckId) {
+    "B-0001" { return "mat_ordenes" }
+    "B-0002" { return "mat_ordenes" }
+    "B-0003" { return "mat_ordenes" }
+    "B-0004" { return "inv_catalogo" }
+    "B-0005" { return "inv_movimientos" }
+    "B-0006" { return "inv_catalogo" }
+    "B-0007" { return "mat_entregas" }
     "B-A*" { return "inv_catalogo" }
     "B-C*" { return "mat_cotizaciones" }
     "B-D*" { return "mat_ordenes" }
@@ -1633,9 +1656,185 @@ function Get-BodegaMaterialesAdminSourceCollection {
   }
 }
 
+function Convert-BodegaAdminPlainLanguage {
+  param([object]$Value)
+  $text = [string]$Value
+  if ([string]::IsNullOrWhiteSpace($text)) { return "" }
+  $text = $text -replace "\bBOM\b", "listado aprobado de materiales"
+  $text = $text -replace "\bitemCode\b|\bbomItemCode\b|\bmatchCode\b", "codigo interno del producto"
+  $text = $text -replace "\bSKU\b|\bsku\b", "producto de bodega"
+  $text = $text -replace "\binv_catalogo\b", "catalogo de bodega"
+  $text = $text -replace "\bmatProjectId\b", "proyecto"
+  $text = $text -replace "\bcodigoLegacy\b", "codigo de referencia"
+  $text = $text -replace "\bLinkear\b|\blinkear\b", "Vincular"
+  $text = $text -replace "\bmatch\b|\bMatch\b", "calce"
+  $text = $text -replace "\bKardex\b", "movimientos de bodega"
+  ($text -replace "\s+", " ").Trim()
+}
+
+function Find-BodegaAdminRecordById {
+  param([object]$Data, [string]$SourceRef, [string]$PreferredCollection = "")
+  if ([string]::IsNullOrWhiteSpace($SourceRef)) { return $null }
+  $collections = @()
+  if (-not [string]::IsNullOrWhiteSpace($PreferredCollection) -and $Data.PSObject.Properties[$PreferredCollection]) {
+    $collections += $PreferredCollection
+  }
+  $collections += @("mat_ordenes", "mat_recepciones", "mat_entregas", "mat_cotizaciones", "inv_catalogo", "inv_movimientos", "mat_projects")
+  foreach ($collection in @($collections | Select-Object -Unique)) {
+    if (-not $Data.PSObject.Properties[$collection]) { continue }
+    foreach ($record in @($Data.$collection)) {
+      $ids = @(
+        Get-FirstText $record @("id")
+        Get-FirstText $record @("folio", "ocId", "numero", "numeroOC", "ocNumber", "recepcionId", "entregaId", "cotizacionId", "code", "skuCode", "catalogCode", "codigoBodega")
+      ) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }
+      if (@($ids | Where-Object { [string]$_ -eq $SourceRef }).Count -gt 0) {
+        return [pscustomobject]@{ collection = $collection; record = $record }
+      }
+    }
+  }
+  $null
+}
+
+function Get-BodegaAdminProjectName {
+  param([object]$Data, [string]$ProjectId)
+  if ([string]::IsNullOrWhiteSpace($ProjectId)) { return "" }
+  $project = @($Data.mat_projects | Where-Object { [string]$_.id -eq $ProjectId } | Select-Object -First 1)
+  if (@($project).Count -gt 0) {
+    $name = Get-FirstText $project[0] @("name", "nombre", "projectName", "proyecto")
+    if ($name) { return $name }
+  }
+  $ProjectId
+}
+
+function Get-BodegaAdminProductDescription {
+  param([object]$Data, [object]$Record, [string]$ProjectId, [string]$Code)
+  $desc = Get-FirstText $Record @("itemDesc", "descripcion", "description", "desc", "nombre", "name", "producto", "productName")
+  if (-not [string]::IsNullOrWhiteSpace($desc)) { return $desc }
+  if ([string]::IsNullOrWhiteSpace($Code)) { return "" }
+  foreach ($sku in @($Data.inv_catalogo)) {
+    $codes = @(
+      Get-FirstText $sku @("code", "skuCode", "catalogCode", "codigoBodega", "id")
+      Get-FirstText $sku @("codigoLegacy", "legacyCode", "bomItemCode")
+    )
+    if (@($codes | Where-Object { [string]$_ -eq $Code }).Count -gt 0) {
+      $catalogDesc = Get-FirstText $sku @("descripcion", "description", "desc", "nombre", "name")
+      if ($catalogDesc) { return $catalogDesc }
+    }
+  }
+  foreach ($mp in @($Data.mat_projects)) {
+    if (-not [string]::IsNullOrWhiteSpace($ProjectId) -and [string]$mp.id -ne $ProjectId) { continue }
+    foreach ($it in @($mp.items)) {
+      $itemCode = Get-FirstText $it @("bomItemCode", "itemCode", "code", "matchCode", "id")
+      if ($itemCode -eq $Code) {
+        $bomDesc = Get-FirstText $it @("descripcion", "description", "desc", "itemDesc", "nombre", "name")
+        if ($bomDesc) { return $bomDesc }
+      }
+    }
+  }
+  ""
+}
+
+function Get-BodegaAdminFriendlyTitle {
+  param([string]$CheckId, [string]$Title)
+  switch -Wildcard ($CheckId) {
+    "B-0001" { return "OC sin proyecto o producto claro" }
+    "B-0002" { return "OC con producto que no aparece en el listado aprobado" }
+    "B-0003" { return "OC o recepcion sin producto claro en bodega" }
+    "B-0004" { return "Producto nuevo parecido a uno del proyecto" }
+    "B-0005" { return "Movimiento de bodega con datos incompletos" }
+    "B-A04" { return "Productos posiblemente duplicados en bodega" }
+    "B-A05" { return "Producto con stock pero sin costo" }
+    "B-B01" { return "Producto del proyecto sin equivalente claro en bodega" }
+    "B-C01" { return "Cotizacion sin PDF formal del proveedor" }
+    "B-C04" { return "Producto cotizado con asociacion dudosa" }
+    "B-C05" { return "Producto cotizado sin asociar al proyecto" }
+    "B-D04" { return "OC sin cotizacion asociada" }
+    "B-D05" { return "OC antigua sin recepcion" }
+    "B-D06" { return "OC con proveedor pendiente o generico" }
+    "B-E08" { return "Precio de factura distinto a la OC" }
+    "B-F*" { return "Entrega a fabrica pendiente de regularizar" }
+    default {
+      $clean = ([string]$Title) -replace "^$([Regex]::Escape($CheckId))\s*-\s*", ""
+      return (Convert-BodegaAdminPlainLanguage $clean)
+    }
+  }
+}
+
+function Get-BodegaAdminFriendlyCopy {
+  param([object]$Data, [object]$Issue, [string]$SourceCollection)
+  $checkId = [string]$Issue.checkId
+  $sourceRef = [string]$Issue.ref
+  $found = Find-BodegaAdminRecordById -Data $Data -SourceRef $sourceRef -PreferredCollection $SourceCollection
+  $record = if ($found) { $found.record } else { $null }
+  $collection = if ($found) { [string]$found.collection } else { $SourceCollection }
+  $projectId = Get-FirstText $record @("matProjectId", "projectId", "proyectoId")
+  $projectName = Get-BodegaAdminProjectName -Data $Data -ProjectId $projectId
+  $code = Get-FirstText $record @("bomItemCode", "itemCode", "matchCode", "skuCode", "catalogCode", "codigoBodega", "code")
+  if ([string]::IsNullOrWhiteSpace($code) -and $sourceRef -match "\|") { $code = @($sourceRef -split "\|")[-1] }
+  $productDesc = Get-BodegaAdminProductDescription -Data $Data -Record $record -ProjectId $projectId -Code $code
+  $ocNumber = Get-FirstText $record @("numero", "numeroOC", "ocNumber", "folio", "ocId", "id")
+  $supplier = Get-FirstText $record @("proveedor", "supplierName", "vendor", "razonSocial")
+  $qty = Get-FirstText $record @("cantidad", "qty", "quantity", "cant")
+  $contextParts = @()
+  if ($collection -eq "mat_ordenes" -or $checkId -like "B-D*" -or $checkId -like "B-000*") {
+    if ($ocNumber) { $contextParts += "OC: $ocNumber" }
+  } elseif ($collection -eq "mat_recepciones") {
+    if ($sourceRef) { $contextParts += "Recepcion: $sourceRef" }
+  } elseif ($collection -eq "mat_entregas") {
+    if ($sourceRef) { $contextParts += "Entrega a fabrica: $sourceRef" }
+  } elseif ($collection -eq "mat_cotizaciones") {
+    if ($sourceRef) { $contextParts += "Cotizacion: $sourceRef" }
+  } elseif ($collection -eq "inv_catalogo") {
+    if ($sourceRef) { $contextParts += "Producto de bodega: $sourceRef" }
+  }
+  if ($projectName) { $contextParts += "Proyecto: $projectName" }
+  if ($supplier) { $contextParts += "Proveedor: $supplier" }
+  $productLine = ""
+  if ($productDesc) {
+    $productLine = "Producto: $productDesc"
+    if ($code) { $productLine += " (codigo interno: $code)" }
+  } elseif ($code) {
+    $productLine = "Producto: sin descripcion guardada; aparece solo el codigo interno $code"
+  }
+  if ($qty) { $productLine = if ($productLine) { "$productLine - Cantidad: $qty" } else { "Cantidad: $qty" } }
+  $problem = switch -Wildcard ($checkId) {
+    "B-0001" { "Esta OC no queda claramente asociada a un proyecto y a un producto. Asi despues cuesta recepcionar y cargar el costo al proyecto correcto." }
+    "B-0002" { "Esta OC tiene un producto que no encontre en el listado aprobado de materiales del proyecto." }
+    "B-0003" { "No puedo identificar con seguridad que producto de bodega corresponde a esta compra o recepcion." }
+    "B-0004" { "Hay un producto nuevo que se parece a uno del proyecto, pero no esta claramente vinculado." }
+    "B-A04" { "Hay dos productos con descripciones muy parecidas. Podrian ser el mismo producto cargado dos veces." }
+    "B-A05" { "Este producto tiene stock, pero no tiene costo confiable registrado." }
+    "B-B01" { "El producto del proyecto no tiene un equivalente claro en bodega." }
+    "B-C01" { "La cotizacion parece venir de un Excel o respaldo interno, no de un PDF formal del proveedor." }
+    "B-C04" { "La cotizacion quedo asociada a un producto, pero el calce no es suficientemente seguro." }
+    "B-C05" { "Hay una linea cotizada que no esta asociada a ningun producto del proyecto." }
+    "B-D04" { "La OC no tiene una cotizacion formal vinculada." }
+    "B-D05" { "La OC lleva mucho tiempo sin recepcion registrada." }
+    "B-D06" { "La OC tiene un proveedor generico o pendiente. Esto complica reclamos, facturas y trazabilidad." }
+    "B-E08" { "El precio de la factura o guia no calza con el precio de la OC." }
+    "B-F*" { "Hay materiales recibidos o entregados que no tienen la entrega a fabrica suficientemente clara." }
+    default { Convert-BodegaAdminPlainLanguage $Issue.detail }
+  }
+  $proposal = switch -Wildcard ($checkId) {
+    "B-0002" { "Antes de recepcionar o usar esto en costos, necesito que confirmes si se corrige la OC, se autoriza como excepcion o se deja pendiente." }
+    "B-D06" { "Necesito que confirmes si corregimos el proveedor real, dejamos compra directa justificada o lo dejamos pendiente." }
+    "B-E08" { "Necesito que Valentina/Carlos definan si se reclama al proveedor, se acepta la diferencia, se pide nota de credito o se bloquea el pago." }
+    default { Convert-BodegaAdminPlainLanguage $Issue.action }
+  }
+  [pscustomobject][ordered]@{
+    title = Get-BodegaAdminFriendlyTitle -CheckId $checkId -Title ([string]$Issue.title)
+    contextLine = ($contextParts -join " | ")
+    productLine = $productLine
+    problem = $problem
+    proposal = $proposal
+    question = "Que hacemos con este caso?"
+  }
+}
+
 function New-BodegaMaterialesAdminCase {
   param(
     [object]$Issue,
+    [object]$Data,
     [datetime]$Now,
     [object]$Existing = $null
   )
@@ -1651,7 +1850,9 @@ function New-BodegaMaterialesAdminCase {
   $skill = Get-BodegaMaterialesAdminSkillDefinition -CheckId $checkId
   $choices = @(Get-BodegaMaterialesAdminChoiceSet -CheckId $checkId)
   $owner = Get-BodegaMaterialesAdminCaseOwner -CheckId $checkId -OwnerText ([string]$Issue.owner)
-  $question = "$owner, confirmame criterio para $checkId. Problema: $($Issue.detail) Propuesta: $($Issue.action)"
+  $sourceCollection = Get-BodegaMaterialesAdminSourceCollection -CheckId $checkId
+  $friendly = Get-BodegaAdminFriendlyCopy -Data $Data -Issue $Issue -SourceCollection $sourceCollection
+  $question = "$($friendly.question) $($friendly.proposal)"
   [pscustomobject][ordered]@{
     id = $id
     mailCode = $mailCode
@@ -1669,8 +1870,13 @@ function New-BodegaMaterialesAdminCase {
     title = [string]$Issue.title
     detail = [string]$Issue.detail
     proposedAction = [string]$Issue.action
+    simpleTitle = [string]$friendly.title
+    simpleContext = [string]$friendly.contextLine
+    simpleProduct = [string]$friendly.productLine
+    simpleProblem = [string]$friendly.problem
+    simpleProposal = [string]$friendly.proposal
     owner = $owner
-    sourceCollection = Get-BodegaMaterialesAdminSourceCollection -CheckId $checkId
+    sourceCollection = $sourceCollection
     sourceId = $sourceRef
     sourceLabel = $sourceRef
     question = $question
@@ -1679,7 +1885,7 @@ function New-BodegaMaterialesAdminCase {
     skillKey = if ($skill) { [string]$skill.key } else { "" }
     skillName = if ($skill) { [string]$skill.name } else { "" }
     skillCondition = if ($skill) { [string]$skill.condition } else { "" }
-    mode = "shadow_proposal"
+    mode = "operativo_asistido"
     canAutoExecuteNow = $false
     safetyReason = "Nivel 2: no modifica inventario real, costos, recepciones, entregas a fabrica ni OCs sin regla aprobada y evidencia suficiente."
     forbiddenActions = @(
@@ -1687,7 +1893,7 @@ function New-BodegaMaterialesAdminCase {
       "No cambiar stock, costo promedio, recepciones, entregas a fabrica u OCs por correo."
       "No cerrar discrepancias OC/factura sin Valentina/Carlos."
     )
-    nextStep = "Responsable responde por correo una alternativa A/B/C. El agente registra decision y aprendizaje; no ejecuta cambios sensibles."
+    nextStep = "Responder por correo una alternativa A/B/C. El agente registra la decision y aprende; no ejecuta cambios en la app."
   }
 }
 
@@ -1698,7 +1904,7 @@ function Get-BodegaMaterialesAdminCases {
   foreach ($issue in @($BodegaReport.issues | Where-Object { $_.level -in @("CRITICO", "ALTO", "MEDIO") })) {
     $tmpKey = "$($issue.checkId)|$($issue.ref)|$($issue.detail)"
     $tmpId = "bma-$($issue.checkId)-$(Get-StableShortCode -Value $tmpKey)" -replace '[^A-Za-z0-9_-]', '_'
-    $cases += New-BodegaMaterialesAdminCase -Issue $issue -Now $Now -Existing $existing[$tmpId]
+    $cases += New-BodegaMaterialesAdminCase -Issue $issue -Data $Data -Now $Now -Existing $existing[$tmpId]
   }
   @($cases | Sort-Object @{ Expression = { if ($_.level -eq "CRITICO") { 0 } elseif ($_.level -eq "ALTO") { 1 } else { 2 } } }, checkId, sourceId)
 }
@@ -1724,7 +1930,7 @@ function Build-BodegaMaterialesAdminReport {
   [pscustomobject][ordered]@{
     generatedAt = $Now.ToString("o")
     date = $Now.ToString("yyyy-MM-dd")
-    stage = "piloto_nivel_2_sin_ejecucion_sensible"
+    stage = "operativo_nivel_2_asistido"
     mandate = "Administrar cola Bodega + Materiales: bajar alertas a casos individuales, proponer acciones, preguntar criterio y aprender reglas candidatas."
     separation = "Fiscalizador Bodega + Materiales detecta confiabilidad; Administrador Bodega + Materiales ordena, pregunta, aprende y solo ejecutara con regla aprobada."
     safety = "Si no es 100% seguro, no ejecuta; pregunta. En este nivel no cambia inventario, costos, recepciones, entregas a fabrica ni OCs."
@@ -1754,17 +1960,27 @@ function Render-BodegaMaterialesAdminQuestionCards {
     $choiceHtml = ""
     foreach ($choice in @($case.choices)) {
       $recommended = if ($choice.recommended) { " <span style='color:#166534;font-weight:700;'>(propuesta del agente)</span>" } else { "" }
-      $choiceHtml += "<li style='margin:0 0 6px 0;'><strong>$(HtmlEscape $choice.key)) $(HtmlEscape $choice.label)</strong>$recommended<br><span style='color:#5f6368;'>$(HtmlEscape $choice.effect)</span></li>"
+      $choiceHtml += "<li style='margin:0 0 6px 0;'><strong>$(HtmlEscape $choice.key)) $(HtmlEscape $choice.label)</strong>$recommended<br><span style='color:#5f6368;'>$(HtmlEscape (Convert-BodegaAdminPlainLanguage $choice.effect))</span></li>"
     }
+    $displayTitle = if ($case.simpleTitle) { [string]$case.simpleTitle } else { Convert-BodegaAdminPlainLanguage $case.title }
+    $contextLine = if ($case.simpleContext) { "<div style='color:#4b5563;margin-bottom:6px;'>$(HtmlEscape $case.simpleContext)</div>" } else { "" }
+    $productLine = if ($case.simpleProduct) { "<div style='color:#202124;margin-bottom:8px;'><strong>$(HtmlEscape $case.simpleProduct)</strong></div>" } else { "" }
+    $problemLine = if ($case.simpleProblem) { [string]$case.simpleProblem } else { Convert-BodegaAdminPlainLanguage $case.detail }
+    $proposalLine = if ($case.simpleProposal) { [string]$case.simpleProposal } else { Convert-BodegaAdminPlainLanguage $case.proposedAction }
     $html += @"
 <div style="border:1px solid #e5e7eb;border-left:4px solid $($tone.accent);background:#ffffff;padding:12px 14px;margin:0 0 12px 0;">
   <div style="margin-bottom:6px;">
     <span style="display:inline-block;background:$($tone.soft);border:1px solid $($tone.accent);color:#202124;font-size:11px;line-height:1;text-transform:uppercase;letter-spacing:.3px;padding:5px 7px;">$(HtmlEscape $case.level)</span>
-    <span style="color:#6b7280;font-size:12px;margin-left:6px;">$(HtmlEscape $case.owner)</span>
+    <span style="color:#6b7280;font-size:12px;margin-left:6px;">Para revisar: $(HtmlEscape $case.owner)</span>
   </div>
-  <div style="font-weight:700;color:#202124;margin-bottom:4px;">$(HtmlEscape $case.mailCode) / $(HtmlEscape $case.checkId) - $(HtmlEscape $case.title)</div>
-  <div style="color:#4b5563;margin-bottom:8px;">$(HtmlEscape $case.sourceLabel) - $(HtmlEscape $case.detail)</div>
-  <div style="background:#f8fafc;border:1px solid #edf2f7;padding:8px 10px;color:#30343b;margin-bottom:10px;"><strong>Pregunta:</strong> $(HtmlEscape $case.question)</div>
+  <div style="font-weight:700;color:#202124;margin-bottom:4px;">$(HtmlEscape $case.mailCode) - $(HtmlEscape $displayTitle)</div>
+  $contextLine
+  $productLine
+  <div style="background:#f8fafc;border:1px solid #edf2f7;padding:8px 10px;color:#30343b;margin-bottom:10px;">
+    <strong>El problema:</strong> $(HtmlEscape $problemLine)<br>
+    <strong>Que necesito:</strong> $(HtmlEscape $proposalLine)<br>
+    <span style="color:#5f6368;">El agente solo guardara tu respuesta; no cambia OCs, stock, costos ni recepciones.</span>
+  </div>
   <div style="background:#fffef7;border:1px solid #f3e8b8;padding:8px 10px;color:#30343b;margin-bottom:10px;">
     <strong>Alternativas para responder:</strong>
     <ul style="margin:8px 0 0 18px;padding:0;">$choiceHtml</ul>
@@ -1784,7 +2000,7 @@ function Render-BodegaMaterialesAdminHtml {
   $metrics = @(
     New-MayuEmailMetric -Label "Casos" -Value $s.casosIndividuales -Tone "info"
     New-MayuEmailMetric -Label "Preguntas" -Value $s.preguntasPendientes -Tone "rojo"
-    New-MayuEmailMetric -Label "Skills candidatas" -Value $s.skillsCandidatas -Tone "info"
+    New-MayuEmailMetric -Label "Reglas candidatas" -Value $s.skillsCandidatas -Tone "info"
     New-MayuEmailMetric -Label "Autoejecutadas" -Value $s.autoejecutadas -Tone "verde"
     New-MayuEmailMetric -Label "Decididas" -Value $s.decididas -Tone "amarillo"
   ) -join ""
@@ -1794,9 +2010,9 @@ function Render-BodegaMaterialesAdminHtml {
       severity = $_.severity
       area = "$($_.block) / $($_.owner)"
       code = "$($_.mailCode) / $($_.checkId)"
-      title = $_.title
-      detail = "$($_.sourceLabel) - $($_.detail)"
-      action = "$($_.proposedAction) Estado: $($_.status)."
+      title = if ($_.simpleTitle) { $_.simpleTitle } else { Convert-BodegaAdminPlainLanguage $_.title }
+      detail = if ($_.simpleProblem) { "$($_.simpleContext) $($_.simpleProduct) - $($_.simpleProblem)" } else { Convert-BodegaAdminPlainLanguage "$($_.sourceLabel) - $($_.detail)" }
+      action = "$(if ($_.simpleProposal) { $_.simpleProposal } else { Convert-BodegaAdminPlainLanguage $_.proposedAction }) Estado: $($_.status)."
       owner = $_.owner
       ref = $_.id
     }
@@ -1804,31 +2020,31 @@ function Render-BodegaMaterialesAdminHtml {
   $skillCards = @($Report.skillCandidates | ForEach-Object {
     [pscustomobject]@{
       severity = "info"
-      area = "Skill candidata"
-      code = $_.id
+      area = "Regla candidata"
+      code = ""
       title = $_.name
-      detail = "Casos detectados: $($_.cases). Condicion: $($_.condition)"
+      detail = "Casos detectados: $($_.cases). Condicion: $(Convert-BodegaAdminPlainLanguage $_.condition)"
       action = "$($_.proposedAction) $($_.activation)"
       owner = "Felix / Responsable funcional"
       ref = $_.scope
     }
   })
   $casesHtml = if ($caseCards.Count -eq 0) { New-MayuEmptyState -Text "Sin casos individuales." } else { Render-IssueListCards -Items $caseCards }
-  $skillsHtml = if ($skillCards.Count -eq 0) { New-MayuEmptyState -Text "Sin skills candidatas nuevas." } else { Render-IssueListCards -Items $skillCards }
+  $skillsHtml = if ($skillCards.Count -eq 0) { New-MayuEmptyState -Text "Sin reglas candidatas nuevas." } else { Render-IssueListCards -Items $skillCards }
   $content = @"
 <table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;margin:0 0 12px 0;"><tr>$metrics</tr></table>
 <div style="background:#f4f7fb;border-left:4px solid #0078d4;padding:12px 14px;color:#30343b;margin:12px 0 18px 0;">
-  Administrador Bodega + Materiales en piloto Nivel 2. Ordena alertas del fiscalizador en casos individuales, pregunta con alternativas y registra criterios para aprendizaje. No crea vistas nuevas en la app.
+  Administrador Bodega + Materiales operativo Nivel 2. Ordena problemas en casos individuales, pregunta con alternativas y guarda respuestas para aprender. No crea vistas nuevas en la app.
   <br><br>
   Regla obligatoria: si no es 100% seguro, no ejecuta; pregunta. No cambia inventario real, costos, recepciones, entregas a fabrica ni OCs por correo. Movimientos con documento adjunto nunca se borran.
   <br><br>
   Formato de respuesta: <strong>BMA-XXXXXXXX: A</strong>. Tambien acepta: <strong>BMA-XXXXXXXX: corregir: [criterio]</strong>, <strong>bloquear</strong> o <strong>rechazar</strong>.
 </div>
 $(New-MayuEmailSection -Title "Preguntas para responsables" -Html $questionsHtml)
-$(New-MayuEmailSection -Title "Casos individuales modo sombra" -Html $casesHtml)
-$(New-MayuEmailSection -Title "Skills candidatas" -Html $skillsHtml)
+$(New-MayuEmailSection -Title "Casos individuales" -Html $casesHtml)
+$(New-MayuEmailSection -Title "Reglas que el agente podria aprender" -Html $skillsHtml)
 "@
-  New-MayuEmailLayout -Title "Administrador Bodega + Materiales MAYU - $($Report.date)" -Subtitle "Piloto Nivel 2: casos individuales, alternativas por correo y aprendizaje sin ejecucion sensible." -ContentHtml $content -Footer "El fiscalizador detecta confiabilidad; el administrador ordena, pregunta y aprende."
+  New-MayuEmailLayout -Title "Administrador Bodega + Materiales MAYU - $($Report.date)" -Subtitle "Nivel 2 operativo: preguntas simples por correo y aprendizaje sin ejecucion sensible." -ContentHtml $content -Footer "El fiscalizador detecta confiabilidad; el administrador ordena, pregunta y aprende."
 }
 
 function Save-BodegaMaterialesAdminCases {
@@ -1866,7 +2082,7 @@ function Invoke-BodegaMaterialesAdmin {
   if ($DoSendEmail -and $realEmailAllowed) {
     $to = Get-UniqueEmails -Emails @($Config.mail.carlos, $Config.mail.valentina)
     $cc = Get-UniqueEmails -Emails @($Config.mail.felix)
-    $subject = "[Bodega-Materiales Admin] Piloto $dateKey - $($report.summary.casosIndividuales) casos, $($report.summary.skillsCandidatas) skills"
+    $subject = "[Bodega-Materiales Admin] $dateKey - $($report.summary.preguntasPendientes) preguntas, $($report.summary.casosIndividuales) casos"
     Send-GraphMail -Token $GraphToken -Sender $Config.mail.sender -To $to -Cc $cc -Subject $subject -HtmlBody $html
     Write-Output "Administrador Bodega+Materiales: correo enviado a $($to -join ', ')."
   } elseif ($DoSendEmail -and -not $realEmailAllowed) {
