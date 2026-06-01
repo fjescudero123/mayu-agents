@@ -1495,7 +1495,8 @@ function New-BodegaMaterialesAdminChoice {
     [string]$Value,
     [string]$Effect,
     [string]$Outcome = "CRITERIO_REGISTRADO",
-    [bool]$Recommended = $false
+    [bool]$Recommended = $false,
+    [bool]$RequiresDetail = $false
   )
   [pscustomobject][ordered]@{
     key = $Key
@@ -1504,6 +1505,7 @@ function New-BodegaMaterialesAdminChoice {
     effect = $Effect
     outcome = $Outcome
     recommended = $Recommended
+    requiresDetail = $RequiresDetail
   }
 }
 
@@ -1552,7 +1554,7 @@ function Get-BodegaMaterialesAdminChoiceSet {
     }
     "B-0001" {
       return @(
-        New-BodegaMaterialesAdminChoice -Key "A" -Label "Corregir proyecto o producto de la OC" -Value "CORREGIR_IDENTIDAD_OC" -Effect "Regularizar a que proyecto y producto corresponde; no cambia stock." -Recommended $true
+        New-BodegaMaterialesAdminChoice -Key "A" -Label "Corregir proyecto o producto de la OC" -Value "CORREGIR_IDENTIDAD_OC" -Effect "Indicar a que proyecto o producto debe corregirse; no cambia stock." -Recommended $true -RequiresDetail $true
         New-BodegaMaterialesAdminChoice -Key "B" -Label "Autorizar excepcion" -Value "EXCEPCION_AUTORIZADA" -Effect "Registrar que la OC se acepta asi por decision de Carlos."
         New-BodegaMaterialesAdminChoice -Key "C" -Label "Dejar pendiente" -Value "BLOQUEAR_IDENTIDAD_OC" -Effect "No recepcionar hasta saber proyecto y producto." -Outcome "BLOQUEADO"
         New-BodegaMaterialesAdminChoice -Key "D" -Label "No hay problema" -Value "RECHAZAR_ALERTA" -Effect "Cerrar el caso porque la OC esta correcta." -Outcome "RECHAZADO"
@@ -1560,7 +1562,7 @@ function Get-BodegaMaterialesAdminChoiceSet {
     }
     "B-0002" {
       return @(
-        New-BodegaMaterialesAdminChoice -Key "A" -Label "Corregir producto en la OC" -Value "CORREGIR_PRODUCTO_OC" -Effect "La OC apunta a un producto equivocado; registrar que debe corregirse." -Recommended $true
+        New-BodegaMaterialesAdminChoice -Key "A" -Label "Corregir producto en la OC" -Value "CORREGIR_PRODUCTO_OC" -Effect "Indicar cual es el producto correcto; no basta responder solo A." -Recommended $true -RequiresDetail $true
         New-BodegaMaterialesAdminChoice -Key "B" -Label "Autorizar excepcion" -Value "EXCEPCION_PRODUCTO_PROYECTO" -Effect "El producto si corresponde al proyecto, aunque no aparezca en el listado aprobado."
         New-BodegaMaterialesAdminChoice -Key "C" -Label "Dejar pendiente para revision" -Value "BLOQUEAR_REVISION_PRODUCTO" -Effect "No recepcionar ni usar en costos hasta revisar el producto." -Outcome "BLOQUEADO"
         New-BodegaMaterialesAdminChoice -Key "D" -Label "No hay problema" -Value "RECHAZAR_ALERTA" -Effect "Cerrar el caso porque la OC esta correcta." -Outcome "RECHAZADO"
@@ -1573,9 +1575,9 @@ function Get-BodegaMaterialesAdminChoiceSet {
     "B-C05"  { return Get-BodegaMaterialesAdminChoiceSet -CheckId "BMA-BOM-SKU-LINK" }
     "BMA-BOM-SKU-LINK" {
       return @(
-        New-BodegaMaterialesAdminChoice -Key "A" -Label "Vincular a producto existente" -Value "LINKEAR_SKU_EXISTENTE" -Effect "Usar un producto que ya existe en bodega, si es el mismo fisicamente." -Recommended $true
+        New-BodegaMaterialesAdminChoice -Key "A" -Label "Vincular a producto existente" -Value "LINKEAR_SKU_EXISTENTE" -Effect "Indicar el producto existente que corresponde; no basta responder solo A." -Recommended $true -RequiresDetail $true
         New-BodegaMaterialesAdminChoice -Key "B" -Label "Crear producto nuevo" -Value "CREAR_SKU_JUSTIFICADO" -Effect "Solo si no existe un producto equivalente; debe quedar motivo y responsable."
-        New-BodegaMaterialesAdminChoice -Key "C" -Label "Corregir producto asociado" -Value "CORREGIR_MATCH_BOM" -Effect "La linea quedo asociada al producto equivocado; registrar que debe corregirse."
+        New-BodegaMaterialesAdminChoice -Key "C" -Label "Corregir producto asociado" -Value "CORREGIR_MATCH_BOM" -Effect "Indicar el producto correcto al que debe quedar asociado." -RequiresDetail $true
         New-BodegaMaterialesAdminChoice -Key "D" -Label "Dejar pendiente para revision" -Value "BLOQUEAR_IDENTIDAD" -Effect "No recepcionar ni usar en costos hasta identificar el producto." -Outcome "BLOQUEADO"
         New-BodegaMaterialesAdminChoice -Key "E" -Label "No hay problema" -Value "RECHAZAR_ALERTA" -Effect "Cerrar el caso porque el producto esta correctamente identificado." -Outcome "RECHAZADO"
       )
@@ -1960,7 +1962,8 @@ function Render-BodegaMaterialesAdminQuestionCards {
     $choiceHtml = ""
     foreach ($choice in @($case.choices)) {
       $recommended = if ($choice.recommended) { " <span style='color:#166534;font-weight:700;'>(propuesta del agente)</span>" } else { "" }
-      $choiceHtml += "<li style='margin:0 0 6px 0;'><strong>$(HtmlEscape $choice.key)) $(HtmlEscape $choice.label)</strong>$recommended<br><span style='color:#5f6368;'>$(HtmlEscape (Convert-BodegaAdminPlainLanguage $choice.effect))</span></li>"
+      $detailNote = if ($choice.PSObject.Properties["requiresDetail"] -and $choice.requiresDetail) { " <span style='color:#9a3412;font-weight:700;'>(indicar detalle)</span>" } else { "" }
+      $choiceHtml += "<li style='margin:0 0 6px 0;'><strong>$(HtmlEscape $choice.key)) $(HtmlEscape $choice.label)</strong>$recommended$detailNote<br><span style='color:#5f6368;'>$(HtmlEscape (Convert-BodegaAdminPlainLanguage $choice.effect))</span></li>"
     }
     $displayTitle = if ($case.simpleTitle) { [string]$case.simpleTitle } else { Convert-BodegaAdminPlainLanguage $case.title }
     $contextLine = if ($case.simpleContext) { "<div style='color:#4b5563;margin-bottom:6px;'>$(HtmlEscape $case.simpleContext)</div>" } else { "" }
@@ -2275,11 +2278,55 @@ function Resolve-BodegaMaterialesAdminChoiceSelection {
   $null
 }
 
+function Test-BodegaMaterialesAdminChoiceNeedsDetail {
+  param([object]$Case, [object]$Choice)
+  if ($Choice -and $Choice.PSObject.Properties["requiresDetail"] -and $Choice.requiresDetail) { return $true }
+  $value = [string]$Choice.value
+  if ($value -in @("CORREGIR_IDENTIDAD_OC", "CORREGIR_PRODUCTO_OC", "LINKEAR_SKU_EXISTENTE", "CORREGIR_MATCH_BOM")) { return $true }
+  $checkId = [string]$Case.checkId
+  $key = [string]$Choice.key
+  if ($checkId -in @("B-0001", "B-0002") -and $key -eq "A") { return $true }
+  $false
+}
+
+function Test-BodegaMaterialesAdminReplyHasDetail {
+  param([string]$Text, [object]$Choice)
+  $remaining = ([string]$Text).Trim()
+  $key = [string]$Choice.key
+  $label = [string]$Choice.label
+  $value = [string]$Choice.value
+  if (-not [string]::IsNullOrWhiteSpace($key)) {
+    $remaining = $remaining -replace ("(?i)^\s*(opci[oó]n\s*)?" + [regex]::Escape($key) + "\s*(\)|\.|:|\-)?\s*"), ""
+  }
+  if (-not [string]::IsNullOrWhiteSpace($label)) {
+    $remaining = $remaining -replace [regex]::Escape($label), ""
+  }
+  if (-not [string]::IsNullOrWhiteSpace($value)) {
+    $remaining = $remaining -replace [regex]::Escape($value), ""
+  }
+  $remaining = ($remaining -replace "\s+", " ").Trim(" :.-")
+  if ([string]::IsNullOrWhiteSpace($remaining)) { return $false }
+  if ($remaining -match "(?i)^(si|sí|ok|vale|confirmo|aprobar|aprobado|correcto)$") { return $false }
+  ($remaining.Length -ge 4 -and $remaining -match "[A-Za-z0-9]{3,}")
+}
+
 function Resolve-BodegaMaterialesAdminReplyDecision {
   param([string]$Text, [object]$Case = $null)
   $choice = Resolve-BodegaMaterialesAdminChoiceSelection -Case $Case -Text $Text
   if ($null -ne $choice) {
     $outcome = if ($choice.outcome) { [string]$choice.outcome } else { "CRITERIO_REGISTRADO" }
+    $needsDetail = Test-BodegaMaterialesAdminChoiceNeedsDetail -Case $Case -Choice $choice
+    if ($needsDetail -and -not (Test-BodegaMaterialesAdminReplyHasDetail -Text $Text -Choice $choice)) {
+      return [pscustomobject]@{
+        status = "PENDIENTE_DETALLE"
+        label = "falta detalle para opcion $($choice.key): $($choice.label)"
+        requiresDetail = $true
+        choiceKey = [string]$choice.key
+        choiceLabel = [string]$choice.label
+        choiceValue = [string]$choice.value
+        choiceEffect = [string]$choice.effect
+      }
+    }
     return [pscustomobject]@{
       status = $outcome
       label = "opcion $($choice.key): $($choice.label)"
@@ -2370,6 +2417,24 @@ function Render-BodegaMaterialesAdminReplyHint {
 "@
 }
 
+function Render-BodegaMaterialesAdminDetailHint {
+  param([object]$Case, [object]$Decision)
+  $code = if ($Case -and $Case.mailCode) { [string]$Case.mailCode } else { "BMA-XXXXXXXX" }
+  $choice = if ($Decision -and $Decision.choiceKey) { [string]$Decision.choiceKey } else { "A" }
+  $title = if ($Case -and $Case.simpleTitle) { [string]$Case.simpleTitle } elseif ($Case -and $Case.title) { Convert-BodegaAdminPlainLanguage $Case.title } else { "Caso Bodega + Materiales" }
+  $product = if ($Case -and $Case.simpleProduct) { "<p><strong>Producto actual:</strong> $(HtmlEscape $Case.simpleProduct)</p>" } else { "" }
+@"
+<div style="font-family:Arial,sans-serif;font-size:14px;color:#202124;line-height:1.45;">
+  <p>Recibi la opcion <strong>$(HtmlEscape $choice)</strong> para <strong>$(HtmlEscape $code)</strong>, pero falta el detalle para poder registrar bien el criterio.</p>
+  <p><strong>Caso:</strong> $(HtmlEscape $title)</p>
+  $product
+  <p>Para corregir producto/proyecto, necesito que indiques cual es el correcto. Responde una linea asi:</p>
+  <p><strong>$(HtmlEscape $code): $(HtmlEscape $choice) - corregir a [producto correcto o codigo correcto]</strong></p>
+  <p>No cambiare la OC, stock, costos ni recepciones con esta respuesta; primero registro el criterio completo.</p>
+</div>
+"@
+}
+
 function Try-ProcessBodegaMaterialesAdminReply {
   param(
     [object]$Config,
@@ -2395,6 +2460,11 @@ function Try-ProcessBodegaMaterialesAdminReply {
     $decision = Resolve-BodegaMaterialesAdminReplyDecision -Text ([string]$action.response) -Case $action.case
     if ($null -eq $decision) {
       $hint = Render-BodegaMaterialesAdminReplyHint -Case $action.case
+      Send-GraphMail -Token $GraphToken -Sender $mailbox -To @($from) -Cc @() -Subject $replySubject -HtmlBody $hint
+      return $true
+    }
+    if ($decision.requiresDetail) {
+      $hint = Render-BodegaMaterialesAdminDetailHint -Case $action.case -Decision $decision
       Send-GraphMail -Token $GraphToken -Sender $mailbox -To @($from) -Cc @() -Subject $replySubject -HtmlBody $hint
       return $true
     }
