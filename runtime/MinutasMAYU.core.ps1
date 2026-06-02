@@ -224,6 +224,23 @@ function Move-GraphItemToFolder {
   Invoke-GraphJson -Token $Token -Method Patch -Uri "https://graph.microsoft.com/v1.0/sites/$SiteId/drive/items/$ItemId" -Body $body | Out-Null
 }
 
+function Get-DocxXmlNodeText {
+  param(
+    [System.Xml.XmlNode]$Node,
+    [System.Xml.XmlNamespaceManager]$NamespaceManager
+  )
+
+  $parts = @()
+  foreach ($child in @($Node.SelectNodes(".//w:t|.//w:tab|.//w:br", $NamespaceManager))) {
+    if ($child.LocalName -eq "t") {
+      $parts += [string]$child.InnerText
+    } elseif ($child.LocalName -eq "tab" -or $child.LocalName -eq "br") {
+      $parts += " "
+    }
+  }
+  return ([regex]::Replace(($parts -join ""), "\s+", " ")).Trim()
+}
+
 function Convert-DocxBytesToText {
   param([byte[]]$Bytes)
   Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
@@ -237,18 +254,37 @@ function Convert-DocxBytesToText {
       return ""
     }
 
-    $xmlText = Get-Content -Raw -Path $documentPath
-    $xmlText = $xmlText -replace "</w:tr>", "`n"
-    $xmlText = $xmlText -replace "</w:p>", "`n"
-    $xmlText = $xmlText -replace "</w:tc>", "`t"
-    $xmlText = $xmlText -replace "<w:tab[^>]*/>", "`t"
-    $xmlText = [regex]::Replace($xmlText, "<[^>]+>", "")
-    $xmlText = [System.Net.WebUtility]::HtmlDecode($xmlText)
+    $doc = New-Object System.Xml.XmlDocument
+    $doc.PreserveWhitespace = $true
+    $doc.Load($documentPath)
+    $ns = New-Object System.Xml.XmlNamespaceManager($doc.NameTable)
+    $ns.AddNamespace("w", "http://schemas.openxmlformats.org/wordprocessingml/2006/main")
+    $body = $doc.SelectSingleNode("//w:body", $ns)
+    if ($null -eq $body) {
+      return ""
+    }
+
     $lines = @()
-    foreach ($line in ($xmlText -split "(`r`n|`n|`r)")) {
-      $clean = [regex]::Replace($line, "[ \t]+", " ").Trim()
-      if ($clean) {
-        $lines += $clean
+    foreach ($node in @($body.ChildNodes)) {
+      if ($node.LocalName -eq "p") {
+        $text = Get-DocxXmlNodeText -Node $node -NamespaceManager $ns
+        if (-not [string]::IsNullOrWhiteSpace($text)) {
+          $lines += $text
+        }
+      } elseif ($node.LocalName -eq "tbl") {
+        foreach ($row in @($node.SelectNodes(".//w:tr", $ns))) {
+          $cells = @()
+          foreach ($cell in @($row.SelectNodes("./w:tc", $ns))) {
+            $cells += Get-DocxXmlNodeText -Node $cell -NamespaceManager $ns
+          }
+          if (@($cells | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }).Count -gt 0) {
+            $line = ($cells | ForEach-Object { ([regex]::Replace([string]$_, "\s+", " ")).Trim() }) -join " | "
+            $line = $line.Trim(" |".ToCharArray())
+            if ($line) {
+              $lines += $line
+            }
+          }
+        }
       }
     }
     return ($lines -join "`n").Trim()
@@ -273,12 +309,17 @@ function Invoke-OpenAiText {
     return ""
   }
   $model = Get-RunbookVariable "MayuOpenAiModel" $false "gpt-5.4-mini"
+  $maxOutputTokensRaw = Get-RunbookVariable "MayuMinutasMaxOutputTokens" $false "9000"
+  $maxOutputTokens = 9000
+  if ([int]::TryParse([string]$maxOutputTokensRaw, [ref]$maxOutputTokens) -eq $false -or $maxOutputTokens -lt 3000) {
+    $maxOutputTokens = 9000
+  }
 
   try {
     $body = @{
       model = $model
       input = $Prompt
-      max_output_tokens = 2500
+      max_output_tokens = $maxOutputTokens
     } | ConvertTo-Json -Depth 10
 
     $response = Invoke-RestMethod `
@@ -287,7 +328,7 @@ function Invoke-OpenAiText {
       -Headers @{ Authorization = "Bearer $apiKey" } `
       -ContentType "application/json" `
       -Body $body `
-      -TimeoutSec 60
+      -TimeoutSec 180
 
     if ($response.output_text) {
       return [string]$response.output_text
@@ -487,6 +528,10 @@ Reglas:
 - Si una seccion no aparece, omitela.
 - Escribe en espanol claro y ejecutivo.
 - Devuelve SOLO HTML, sin JSON, sin markdown, sin backticks.
+- Prioridad critica: completitud sobre brevedad. No cortes la minuta por hacerla corta.
+- Conserva todos los compromisos, decisiones, bloqueos e hitos que aparezcan con datos en el documento.
+- No agrupes ni deduplices compromisos salvo que sean literalmente repetidos.
+- Si una tabla del Word tiene filas con algun dato, cada fila debe quedar representada en el HTML.
 
 Requisitos del HTML:
 - Sin etiquetas <html> ni <body>.
@@ -502,6 +547,8 @@ Requisitos del HTML:
 - Usa un tono ejecutivo y concreto.
 - Incluye, si existe evidencia en el texto: asistentes, objetivo, estado/avances/hitos, bloqueos, decisiones, compromisos y proxima reunion.
 - Si hay listas de proyectos o compromisos, conviertelas en tablas HTML con encabezados y estilos inline.
+- En compromisos usa una tabla con columnas: Compromiso, Responsable, Fecha y Proyecto/Contexto si aparece.
+- Para reuniones de proyectos, preserva especialmente la tabla de proyectos activos, bloqueos criticos, hitos de la semana, proximos proyectos y cierre de compromisos.
 - Evita responder solo con parrafos simples. Debe verse como minuta formal MAYU del estilo historico.
 
 Plantilla visual de referencia a imitar:
@@ -541,6 +588,7 @@ function Process-MinutaItem {
   if ([string]::IsNullOrWhiteSpace($text)) {
     throw "No se pudo extraer texto util desde $($item.name)"
   }
+  Write-Output "Texto DOCX extraido: $($text.Length) caracteres / $(@($text -split "`n").Count) lineas."
 
   $meetingTitle = [string]$parsed.Meeting.asunto_prefix
   $prompt = Build-MinutaPrompt `
