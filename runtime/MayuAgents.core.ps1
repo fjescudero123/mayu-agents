@@ -3318,6 +3318,121 @@ function Get-AdminLearningConditionFromCase {
   $base
 }
 
+function Test-FinanzasAdminLearningActiveN1 {
+  param([object]$Learning)
+  $status = [string](Get-AdminLearningField -Item $Learning -Name "status")
+  $activation = [string](Get-AdminLearningField -Item $Learning -Name "activationState")
+  $level = [int](Get-Number (Get-AdminLearningField -Item $Learning -Name "autonomyLevel" -Default 0))
+  (($status -eq "ACTIVA_AUTONOMIA_N1") -or ($activation -eq "AUTONOMIA_CONTROLADA_N1") -or ($level -ge 1))
+}
+
+function Get-FinanzasAdminLearningActivationDateKey {
+  param([object[]]$Learnings)
+  $dates = @()
+  foreach ($learning in @($Learnings)) {
+    foreach ($field in @("activatedAt", "approvedAt", "updatedAt", "decidedAt")) {
+      $value = [string](Get-AdminLearningField -Item $learning -Name $field)
+      if ([string]::IsNullOrWhiteSpace($value)) { continue }
+      if ($value -match "^(\d{4}-\d{2}-\d{2})") { $dates += $matches[1] }
+      break
+    }
+  }
+  if ($dates.Count -eq 0) { return $null }
+  @($dates | Sort-Object -Descending | Select-Object -First 1)[0]
+}
+
+function Test-FinanzasAdminAutonomyDateScope {
+  param([object]$Case, [object[]]$Learnings)
+  $activationDateKey = Get-FinanzasAdminLearningActivationDateKey -Learnings $Learnings
+  if ($null -eq $activationDateKey) { return $false }
+  $sourceDateText = [string](Get-AdminLearningField -Item $Case -Name "sourceDate")
+  if ([string]::IsNullOrWhiteSpace($sourceDateText)) { return $false }
+  if ($sourceDateText -notmatch "^(\d{4}-\d{2}-\d{2})") { return $false }
+  $sourceDateKey = $matches[1]
+  ($sourceDateKey -ge $activationDateKey)
+}
+
+function Get-FinanzasAdminChoiceByValue {
+  param([object]$Case, [string]$Value)
+  @(@($Case.choices) | Where-Object { [string]$_.value -eq $Value } | Select-Object -First 1)[0]
+}
+
+function Get-FinanzasAdminAutonomyDecision {
+  param([object]$Case, [object[]]$Learnings)
+  if ([string](Get-AdminLearningField -Item $Case -Name "status") -ne "PENDIENTE_VALENTINA") { return $null }
+  $active = @($Learnings | Where-Object { Test-FinanzasAdminLearningActiveN1 -Learning $_ })
+  if ($active.Count -eq 0) { return $null }
+
+  $text = "$([string]$Case.sourceLabel) $([string]$Case.detail) $([string]$Case.question)".ToLowerInvariant()
+  $sodimacRules = @($active | Where-Object { [string]$_.skillKey -eq "FIN-BAN-SODIMAC-CANJE" })
+  if ([string]$Case.code -eq "F-B02" -and $sodimacRules.Count -gt 0 -and ($text -match "sodimac|96792430" -or $text -match "cca")) {
+    if (-not (Test-FinanzasAdminAutonomyDateScope -Case $Case -Learnings $sodimacRules)) { return $null }
+    $rule = @($sodimacRules | Sort-Object decidedAt -Descending | Select-Object -First 1)[0]
+    return [pscustomobject][ordered]@{
+      learning = $rule
+      status = "AUTO_CRITERIO_N1"
+      decision = "Autonomia N1: revisar como Sodimac/canje operativo antes de cerrar conciliacion."
+      choiceKey = ""
+      choiceLabel = "Sodimac/canje operativo"
+      choiceValue = "SODIMAC_CANJE_OPERATIVO"
+      choiceEffect = "No clasifica como cobranza cliente simple; deja criterio operativo aprendido y exige evidencia antes de cierre contable."
+      reason = "Skill FIN-BAN-SODIMAC-CANJE activada por respuesta de Valentina."
+    }
+  }
+
+  $cargoRules = @($active | Where-Object { [string]$_.skillKey -eq "FIN-BAN-CARGOS" -and [string]$_.selectedChoiceValue -eq "PAGO_PROVEEDOR_O_GASTO" })
+  if ([string]$Case.code -eq "F-B01" -and [string]$Case.suggestionKind -eq "PAGO_PROVEEDOR_O_GASTO" -and $cargoRules.Count -ge 3) {
+    if (-not (Test-FinanzasAdminAutonomyDateScope -Case $Case -Learnings $cargoRules)) { return $null }
+    $choice = Get-FinanzasAdminChoiceByValue -Case $Case -Value "PAGO_PROVEEDOR_O_GASTO"
+    if ($null -eq $choice) { return $null }
+    $rule = @($cargoRules | Sort-Object decidedAt -Descending | Select-Object -First 1)[0]
+    return [pscustomobject][ordered]@{
+      learning = $rule
+      status = "AUTO_CRITERIO_N1"
+      decision = "Autonomia N1: $([string]$choice.key)"
+      choiceKey = [string]$choice.key
+      choiceLabel = [string]$choice.label
+      choiceValue = [string]$choice.value
+      choiceEffect = [string]$choice.effect
+      reason = "3 respuestas consistentes de Valentina para cargos bancarios como Pago a proveedor/CxP."
+    }
+  }
+
+  $null
+}
+
+function Apply-FinanzasAdminAutonomyN1 {
+  param([object[]]$Cases, [object[]]$Learnings, [datetime]$Now)
+  foreach ($case in @($Cases)) {
+    $decision = Get-FinanzasAdminAutonomyDecision -Case $case -Learnings $Learnings
+    if ($null -eq $decision) { continue }
+    $learning = $decision.learning
+    $case | Add-Member -NotePropertyName status -NotePropertyValue ([string]$decision.status) -Force
+    $case | Add-Member -NotePropertyName decision -NotePropertyValue ([string]$decision.decision) -Force
+    $case | Add-Member -NotePropertyName selectedChoiceKey -NotePropertyValue ([string]$decision.choiceKey) -Force
+    $case | Add-Member -NotePropertyName selectedChoiceLabel -NotePropertyValue ([string]$decision.choiceLabel) -Force
+    $case | Add-Member -NotePropertyName selectedChoiceValue -NotePropertyValue ([string]$decision.choiceValue) -Force
+    $case | Add-Member -NotePropertyName selectedChoiceEffect -NotePropertyValue ([string]$decision.choiceEffect) -Force
+    $case | Add-Member -NotePropertyName decidedBy -NotePropertyValue "finanzas_admin" -Force
+    $case | Add-Member -NotePropertyName decidedAt -NotePropertyValue ($Now.ToString("o")) -Force
+    $case | Add-Member -NotePropertyName decisionSource -NotePropertyValue "skill_autonomia_n1" -Force
+    $case | Add-Member -NotePropertyName learningId -NotePropertyValue ([string]$learning.id) -Force
+    $case | Add-Member -NotePropertyName learningStatus -NotePropertyValue ([string]$learning.status) -Force
+    $case | Add-Member -NotePropertyName learningSummary -NotePropertyValue ([string]$learning.summary) -Force
+    $case | Add-Member -NotePropertyName learningCondition -NotePropertyValue ([string]$learning.condition) -Force
+    $case | Add-Member -NotePropertyName learningAction -NotePropertyValue ([string]$learning.proposedAction) -Force
+    $case | Add-Member -NotePropertyName autoAppliedByAgent -NotePropertyValue $true -Force
+    $case | Add-Member -NotePropertyName autoAppliedLevel -NotePropertyValue 1 -Force
+    $case | Add-Member -NotePropertyName autoAppliedAt -NotePropertyValue ($Now.ToString("o")) -Force
+    $case | Add-Member -NotePropertyName autoAppliedReason -NotePropertyValue ([string]$decision.reason) -Force
+    $case | Add-Member -NotePropertyName mode -NotePropertyValue "autonomia_controlada_n1" -Force
+    $case | Add-Member -NotePropertyName canAutoExecuteNow -NotePropertyValue $false -Force
+    $case | Add-Member -NotePropertyName safetyReason -NotePropertyValue "Autonomia N1: resuelve la pregunta administrativa por skill aprendida, pero no modifica caja, pagos, impuestos, cierres ni datos financieros sensibles." -Force
+    $case | Add-Member -NotePropertyName nextStep -NotePropertyValue "Queda trazado como criterio aplicado por el agente; cualquier cambio financiero real sigue requiriendo flujo manual/aprobado." -Force
+  }
+  @($Cases)
+}
+
 function Get-FinanzasAdminExistingMap {
   param([object[]]$Cases)
   $map = @{}
@@ -3393,6 +3508,7 @@ function Get-FinanzasAdminCases {
     $cases += New-FinanzasAdminCase -Id $id -Code $code -Severity "amarillo" -Domain "CxC" -Title "Factura CxC sin proyecto" -Detail "No tiene CRM/projectId/asignaciones; afecta lectura comercial y directorio." -Amount (Get-Number $f.montoTotal) -SourceCollection ([string]$Config.collections.fin_facturas_ar) -SourceId $sourceId -SourceDate ([string]$f.fechaEmision) -SourceLabel $label -SuggestionKind "VINCULAR_CXC_PROYECTO" -Confidence "media" -ProposedAction "Vincular a proyecto/CRM o dejar excepcion comercial documentada." -Question $question -Choices $choices -SkillKey ([string]$skill.key) -SkillName ([string]$skill.name) -Now $Now -Existing $existing[$id]
   }
 
+  $cases = @(Apply-FinanzasAdminAutonomyN1 -Cases $cases -Learnings @($Data.fin_admin_learnings) -Now $Now)
   @($cases | Sort-Object @{ Expression = { if ($_.severity -eq "rojo") { 0 } else { 1 } } }, @{ Expression = "amount"; Descending = $true })
 }
 
@@ -3427,16 +3543,18 @@ function Build-FinanzasAdminReport {
   [pscustomobject][ordered]@{
     generatedAt = $Now.ToString("o")
     date = $Now.ToString("yyyy-MM-dd")
-    stage = "piloto_productivo_nivel_2"
+    stage = "piloto_productivo_nivel_3_autonomia_controlada"
     mandate = "Administrar operativamente Finanzas: ordenar pendientes, bajar alertas a casos individuales, proponer resoluciones en modo sombra y convertir respuestas repetidas en skills aprobables."
-    safety = "Si no es 100% seguro, no ejecuta; pregunta. En Nivel 2 propone caso a caso y persiste la bandeja, sin autoejecutar cambios financieros."
+    safety = "Si no es 100% seguro, pregunta. En Nivel 3 aplica skills aprobadas solo para resolver preguntas administrativas repetidas; no modifica datos financieros sensibles."
     summary = [pscustomobject][ordered]@{
       pendientes = @($queue).Count
       preguntasValentina = @($questions).Count
       skillsCandidatas = @($skillCandidates).Count
       autoejecutadas = 0
+      autoaplicadasN1 = @($cases | Where-Object { $_.autoAppliedByAgent -eq $true }).Count
       casosIndividuales = @($cases).Count
       casosModoSombra = @($cases | Where-Object { $_.mode -eq "shadow_proposal" }).Count
+      casosAutonomiaN1 = @($cases | Where-Object { $_.mode -eq "autonomia_controlada_n1" }).Count
       rojas = @($queue | Where-Object { $_.severity -eq "rojo" }).Count
       amarillas = @($queue | Where-Object { $_.severity -eq "amarillo" }).Count
     }
@@ -3495,7 +3613,8 @@ function Render-FinanzasAdminHtml {
     New-MayuEmailMetric -Label "Casos detalle" -Value $s.casosIndividuales -Tone "info"
     New-MayuEmailMetric -Label "Preguntas" -Value $s.preguntasValentina -Tone "rojo"
     New-MayuEmailMetric -Label "Skills candidatas" -Value $s.skillsCandidatas -Tone "info"
-    New-MayuEmailMetric -Label "Autoejecutadas" -Value $s.autoejecutadas -Tone "verde"
+    New-MayuEmailMetric -Label "Autoaplicadas N1" -Value $s.autoaplicadasN1 -Tone "verde"
+    New-MayuEmailMetric -Label "Autoejecuciones" -Value $s.autoejecutadas -Tone "info"
   ) -join ""
 
   $skillCards = @($Report.skillCandidates | ForEach-Object {
@@ -3530,7 +3649,7 @@ function Render-FinanzasAdminHtml {
   $content = @"
 <table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;margin:0 0 12px 0;"><tr>$metrics</tr></table>
 <div style="background:#f4f7fb;border-left:4px solid #0078d4;padding:12px 14px;color:#30343b;margin:12px 0 18px 0;">
-  El Administrador Finanzas esta activo como piloto Nivel 2. Baja alertas agrupadas a casos individuales y trabaja en modo sombra: propone, persiste bandeja y aprende patrones candidatos, pero no modifica datos financieros sin aprobacion.
+  El Administrador Finanzas esta activo como piloto Nivel 3 de autonomia controlada. Baja alertas agrupadas a casos individuales, aplica skills aprobadas para preguntas repetidas y aprende nuevos patrones, pero no modifica datos financieros sin aprobacion.
   <br><br>
   Para responder por correo, Valentina solo debe elegir una alternativa por caso, por ejemplo: <strong>ADM-XXXXXX: A</strong>. Si ninguna alternativa calza, puede responder: <strong>ADM-XXXXXX: corregir: [criterio]</strong>.
 </div>
@@ -3539,7 +3658,7 @@ $(New-MayuEmailSection -Title "Casos individuales modo sombra" -Html $casesHtml)
 $(New-MayuEmailSection -Title "Skills candidatas" -Html $skillsHtml)
 $(New-MayuEmailSection -Title "Cola operativa" -Html $queueHtml)
 "@
-  New-MayuEmailLayout -Title "Administrador Finanzas MAYU - $($Report.date)" -Subtitle "Piloto productivo Nivel 2: casos individuales, modo sombra y skills candidatas." -ContentHtml $content -Footer "El fiscalizador sigue separado: el administrador ordena y propone; el fiscalizador valida confiabilidad."
+  New-MayuEmailLayout -Title "Administrador Finanzas MAYU - $($Report.date)" -Subtitle "Piloto productivo Nivel 3: autonomia controlada, casos individuales y skills candidatas." -ContentHtml $content -Footer "El fiscalizador sigue separado: el administrador ordena y aplica criterios administrativos; el fiscalizador valida confiabilidad."
 }
 
 function Save-FinanzasAdminCases {
@@ -3572,11 +3691,11 @@ function Invoke-FinanzasAdmin {
   Write-TextFileToGraph -Token $GraphToken -SiteId $SiteId -FilePath "$folder/$dateKey.json" -Text ($report | ConvertTo-Json -Depth 80) -ContentType "application/json; charset=utf-8"
   Write-TextFileToGraph -Token $GraphToken -SiteId $SiteId -FilePath "$folder/$dateKey.html" -Text $html -ContentType "text/html; charset=utf-8"
   $savedCases = Save-FinanzasAdminCases -Config $Config -Report $report
-  Write-Output "Administrador Finanzas: pendientes=$($report.summary.pendientes) casos=$($report.summary.casosIndividuales) guardados=$savedCases preguntas=$($report.summary.preguntasValentina) skills=$($report.summary.skillsCandidatas)."
+  Write-Output "Administrador Finanzas: pendientes=$($report.summary.pendientes) casos=$($report.summary.casosIndividuales) guardados=$savedCases preguntas=$($report.summary.preguntasValentina) skills=$($report.summary.skillsCandidatas) autoN1=$($report.summary.autoaplicadasN1) autoejecuciones=$($report.summary.autoejecutadas)."
   if ($DoSendEmail) {
     $to = Get-UniqueEmails -Emails @($Config.mail.valentina)
     $cc = Get-UniqueEmails -Emails @($Config.mail.felix)
-    $subject = "[Finanzas Admin] Piloto $dateKey - $($report.summary.pendientes) pendientes, $($report.summary.skillsCandidatas) skills"
+    $subject = "[Finanzas Admin] Nivel 3 $dateKey - $($report.summary.pendientes) pendientes, $($report.summary.autoaplicadasN1) auto N1"
     Send-GraphMail -Token $GraphToken -Sender $Config.mail.sender -To $to -Cc $cc -Subject $subject -HtmlBody $html
     Write-Output "Administrador Finanzas: correo enviado a $($to -join ', ')."
   } else {
