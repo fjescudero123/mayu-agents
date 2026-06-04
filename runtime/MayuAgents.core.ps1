@@ -4063,6 +4063,7 @@ function ConvertFrom-BiceCartolaText {
       for ($i = 0; $i -lt $cols.Count; $i++) {
         $label = ([string]$cols[$i]).ToLowerInvariant()
         if ($label -match "fecha" -and -not $header.ContainsKey("fecha")) { $header["fecha"] = $i }
+        if ($label -match "documento|operaci[oó]n|nro|numero|n[uú]mero" -and -not $header.ContainsKey("documento")) { $header["documento"] = $i }
         if ($label -match "descrip|detalle|glosa|movimiento" -and -not $header.ContainsKey("descripcion")) { $header["descripcion"] = $i }
         if ($label -match "cargo|debe" -and -not $header.ContainsKey("cargo")) { $header["cargo"] = $i }
         if ($label -match "abono|haber" -and -not $header.ContainsKey("abono")) { $header["abono"] = $i }
@@ -4085,11 +4086,16 @@ function ConvertFrom-BiceCartolaText {
 
     $cargo = 0.0
     $abono = 0.0
+    $documento = ""
     $direction = "DESCONOCIDO"
     if ($header.Count -gt 0 -and $cols.Count -gt 1) {
+      if ($header.ContainsKey("documento") -and $header["documento"] -lt $cols.Count) { $documento = ([string]$cols[$header["documento"]]).Trim() }
       if ($header.ContainsKey("cargo") -and $header["cargo"] -lt $cols.Count) { $cargo = [Math]::Abs((ConvertFrom-ClpText -Text $cols[$header["cargo"]])) }
       if ($header.ContainsKey("abono") -and $header["abono"] -lt $cols.Count) { $abono = [Math]::Abs((ConvertFrom-ClpText -Text $cols[$header["abono"]])) }
       if ($header.ContainsKey("descripcion") -and $header["descripcion"] -lt $cols.Count) { $withoutDate = [string]$cols[$header["descripcion"]] }
+    }
+    if ([string]::IsNullOrWhiteSpace($documento) -and $cols.Count -ge 2 -and ([string]$cols[1]) -match "^\s*\d{5,}\s*$") {
+      $documento = ([string]$cols[1]).Trim()
     }
     if ($cargo -eq 0 -and $abono -eq 0 -and $cols.Count -ge 4) {
       $tail = @()
@@ -4121,6 +4127,7 @@ function ConvertFrom-BiceCartolaText {
     if ($abono -gt 0) { $direction = "ABONO" }
     $rows += [pscustomobject]@{
       fecha = $date
+      documento = $documento
       descripcion = ($withoutDate -replace "\s+", " ").Trim()
       cargo = [Math]::Round($cargo, 0)
       abono = [Math]::Round($abono, 0)
@@ -4162,6 +4169,44 @@ function Get-BiceMovementAmountKey {
   "A$abono"
 }
 
+function Get-BiceMovementTime {
+  param([object]$Value)
+  $matches = [regex]::Matches([string]$Value, "\b\d{1,2}:\d{2}(?::\d{2})?\b")
+  if ($matches.Count -eq 0) { return "" }
+  [string]$matches[$matches.Count - 1].Value
+}
+
+function Test-BiceDocumentsCompatible {
+  param([object]$A, [object]$B)
+  $aDoc = Normalize-BiceDocument $A
+  $bDoc = Normalize-BiceDocument $B
+  if ($aDoc -eq "NA" -or $bDoc -eq "NA") { return $false }
+  if ($aDoc -eq $bDoc) { return $true }
+  if ([Math]::Min($aDoc.Length, $bDoc.Length) -lt 6) { return $false }
+  return $aDoc.EndsWith($bDoc) -or $bDoc.EndsWith($aDoc)
+}
+
+function Test-BiceSameMovementForDedupe {
+  param([object]$Row, [object]$ExistingMov)
+  $rowDoc = Normalize-BiceDocument $Row.documento
+  $existingDoc = Normalize-BiceDocument $ExistingMov.documento
+  if ($rowDoc -ne "NA" -and $existingDoc -ne "NA") {
+    return (Test-BiceDocumentsCompatible -A $rowDoc -B $existingDoc)
+  }
+
+  $rowText = "$($Row.descripcion) $($Row.raw)"
+  $existingText = "$($ExistingMov.descripcion) $($ExistingMov.biceMailRaw)"
+  $rowTime = Get-BiceMovementTime $rowText
+  $existingTime = Get-BiceMovementTime $existingText
+  if (-not [string]::IsNullOrWhiteSpace($rowTime) -and -not [string]::IsNullOrWhiteSpace($existingTime)) {
+    return $rowTime -eq $existingTime
+  }
+
+  $rowDesc = (Normalize-MayuText $Row.descripcion).ToLowerInvariant()
+  $existingDesc = (Normalize-MayuText $ExistingMov.descripcion).ToLowerInvariant()
+  return ($rowDesc.Length -ge 40 -and $existingDesc.Length -ge 40 -and $rowDesc -eq $existingDesc)
+}
+
 function Get-BiceImportSignature {
   param([object]$Mov)
   $desc = (Normalize-MayuText $Mov.descripcion).ToLowerInvariant()
@@ -4196,7 +4241,7 @@ function ConvertTo-BiceBankMovement {
     banco = "BICE"
     cuenta = $Account
     fecha = [string]$Row.fecha
-    documento = ""
+    documento = [string]$Row.documento
     descripcion = [string]$Row.descripcion
     cargo = [Math]::Round((Get-Number $Row.cargo), 0)
     abono = [Math]::Round((Get-Number $Row.abono), 0)
@@ -4252,9 +4297,11 @@ function Find-BiceExistingBankMatch {
   foreach ($mov in @($BankRows | Where-Object { [string]$_.fecha -eq $date })) {
     $movCargo = [Math]::Round((Get-Number $mov.cargo), 0)
     $movAbono = [Math]::Round((Get-Number $mov.abono), 0)
-    if ($cargo -gt 0 -and $movCargo -eq $cargo) { return $mov }
-    if ($abono -gt 0 -and $movAbono -eq $abono) { return $mov }
-    if ($cargo -eq 0 -and $abono -eq 0 -and $amount -gt 0 -and ($movCargo -eq $amount -or $movAbono -eq $amount)) { return $mov }
+    $sameAmount = $false
+    if ($cargo -gt 0 -and $movCargo -eq $cargo) { $sameAmount = $true }
+    if ($abono -gt 0 -and $movAbono -eq $abono) { $sameAmount = $true }
+    if ($cargo -eq 0 -and $abono -eq 0 -and $amount -gt 0 -and ($movCargo -eq $amount -or $movAbono -eq $amount)) { $sameAmount = $true }
+    if ($sameAmount -and (Test-BiceSameMovementForDedupe -Row $Row -ExistingMov $mov)) { return $mov }
   }
   $null
 }
