@@ -381,25 +381,264 @@ function Normalize-ModelHtml {
   return $candidate.Trim()
 }
 
-function Get-FallbackHtml {
+function Test-MinutaHtmlLooksUsable {
+  param([string]$HtmlBody)
+
+  if ([string]::IsNullOrWhiteSpace($HtmlBody)) {
+    return $false
+  }
+
+  $candidate = $HtmlBody.Trim()
+  if ($candidate -match "^\s*#") {
+    return $false
+  }
+  if ($candidate -match "\|\s*-{2,}\s*\|") {
+    return $false
+  }
+  if ($candidate -notmatch "<(div|table|h1|h2|p|ul|ol)\b") {
+    return $false
+  }
+  return $true
+}
+
+function Normalize-MinutaComparableText {
+  param([string]$Text)
+
+  if ([string]::IsNullOrWhiteSpace($Text)) {
+    return ""
+  }
+
+  $decoded = [System.Net.WebUtility]::HtmlDecode($Text)
+  $withoutTags = [regex]::Replace($decoded, "<[^>]+>", " ")
+  $normalized = $withoutTags.Normalize([System.Text.NormalizationForm]::FormD)
+  $builder = New-Object System.Text.StringBuilder
+  foreach ($char in $normalized.ToCharArray()) {
+    $category = [System.Globalization.CharUnicodeInfo]::GetUnicodeCategory($char)
+    if ($category -ne [System.Globalization.UnicodeCategory]::NonSpacingMark) {
+      [void]$builder.Append($char)
+    }
+  }
+
+  $plain = $builder.ToString().Normalize([System.Text.NormalizationForm]::FormC).ToLowerInvariant()
+  $plain = [regex]::Replace($plain, "[^a-z0-9]+", " ")
+  return ([regex]::Replace($plain, "\s+", " ")).Trim()
+}
+
+function Get-CommitmentsFromExtractedText {
+  param([string]$ExtractedText)
+
+  $commitments = @()
+  $insideCommitmentTable = $false
+  $lines = @($ExtractedText -split "\r?\n" | ForEach-Object { ([string]$_).Trim() })
+
+  foreach ($line in $lines) {
+    if ($line -match "^\s*Compromiso\s*\|\s*Responsable\s*\|\s*Fecha\s*$") {
+      $insideCommitmentTable = $true
+      continue
+    }
+
+    if (-not $insideCommitmentTable) {
+      continue
+    }
+
+    if ([string]::IsNullOrWhiteSpace($line)) {
+      continue
+    }
+
+    if ($line -notmatch "\|") {
+      $insideCommitmentTable = $false
+      continue
+    }
+
+    $parts = @($line -split "\|" | ForEach-Object { ([regex]::Replace([string]$_, "\s+", " ")).Trim() })
+    if ($parts.Count -lt 3) {
+      continue
+    }
+
+    $commitment = [string]$parts[0]
+    $owner = [string]$parts[1]
+    $date = [string]$parts[2]
+    if ([string]::IsNullOrWhiteSpace($commitment) -or $commitment -match "^\s*Compromiso\s*$") {
+      continue
+    }
+
+    $commitments += [pscustomobject]@{
+      Compromiso = $commitment
+      Responsable = $owner
+      Fecha = $date
+    }
+  }
+
+  return @($commitments)
+}
+
+function Test-MinutaCoversCommitments {
+  param(
+    [string]$HtmlBody,
+    [object[]]$Commitments,
+    [ref]$MissingCommitments
+  )
+
+  $missing = @()
+  if (-not $Commitments -or -not $Commitments.Count) {
+    if ($MissingCommitments) { $MissingCommitments.Value = @() }
+    return $true
+  }
+
+  $haystack = Normalize-MinutaComparableText -Text $HtmlBody
+  foreach ($commitment in @($Commitments)) {
+    $needle = Normalize-MinutaComparableText -Text ([string]$commitment.Compromiso)
+    if ($needle.Length -lt 3) {
+      continue
+    }
+    if (-not $haystack.Contains($needle)) {
+      $missing += $commitment
+    }
+  }
+
+  if ($MissingCommitments) {
+    $MissingCommitments.Value = @($missing)
+  }
+  return ($missing.Count -eq 0)
+}
+
+function Convert-PipeRowsToHtmlTable {
+  param([string[]]$Rows)
+
+  if (-not $Rows -or -not $Rows.Count) {
+    return ""
+  }
+
+  $html = New-Object System.Collections.Generic.List[string]
+  $html.Add('<table style="width:100%; border-collapse:collapse; font-size:13px; margin:10px 0 18px 0;">')
+  for ($i = 0; $i -lt $Rows.Count; $i++) {
+    $cells = @($Rows[$i] -split "\|" | ForEach-Object { ([regex]::Replace([string]$_, "\s+", " ")).Trim() })
+    if ($i -eq 0) {
+      $html.Add('<thead><tr>')
+      foreach ($cell in $cells) {
+        $html.Add(('<th style="background-color:#2E5A8B; color:#fff; padding:8px; border:1px solid #d7dee8; text-align:left;">{0}</th>' -f (HtmlEscape $cell)))
+      }
+      $html.Add('</tr></thead><tbody>')
+      continue
+    }
+
+    $rowBackground = "#ffffff"
+    if ($i % 2 -eq 0) {
+      $rowBackground = "#f7f9fc"
+    }
+    $html.Add(('<tr style="background-color:{0};">' -f $rowBackground))
+    foreach ($cell in $cells) {
+      $html.Add(('<td style="padding:8px; border:1px solid #d7dee8; vertical-align:top;">{0}</td>' -f (HtmlEscape $cell)))
+    }
+    $html.Add('</tr>')
+  }
+  $html.Add('</tbody></table>')
+  return ($html -join "")
+}
+
+function Convert-ExtractedTextToDeterministicHtml {
   param(
     [string]$MeetingTitle,
     [string]$Date,
     [string]$SourceFileName,
-    [string]$ExtractedText
+    [string]$ExtractedText,
+    [string]$MeetingType = ""
   )
 
   $safeTitle = HtmlEscape $MeetingTitle
   $safeDate = HtmlEscape $Date
   $safeFile = HtmlEscape $SourceFileName
-  $safeText = HtmlEscape $ExtractedText
-  @"
-<h1>$safeTitle</h1>
-<p><strong>Fecha:</strong> $safeDate</p>
-<p><strong>Archivo fuente:</strong> $safeFile</p>
-<p>No se pudo estructurar la minuta con IA. Se envia el contenido extraido del AGENDA para no frenar la operacion.</p>
-<pre style="white-space:pre-wrap;font-family:Consolas,monospace;background:#f6f6f6;padding:12px;border-radius:6px;">$safeText</pre>
-"@
+  $html = New-Object System.Collections.Generic.List[string]
+  $tableRows = New-Object System.Collections.Generic.List[string]
+  $inList = $false
+
+  $flushTable = {
+    if ($tableRows.Count -gt 0) {
+      $html.Add((Convert-PipeRowsToHtmlTable -Rows $tableRows.ToArray()))
+      $tableRows.Clear()
+    }
+  }
+
+  $html.Add('<div style="font-family:Arial,sans-serif; max-width:800px; margin:0 auto; color:#333; line-height:1.45;">')
+  $html.Add('<div style="border-bottom:3px solid #2E5A8B; padding-bottom:15px; margin-bottom:20px;">')
+  $html.Add(('<h1 style="color:#2E5A8B; margin:0; font-size:24px;">{0}</h1>' -f $safeTitle))
+  $html.Add(('<p style="color:#666; margin:5px 0 0 0; font-size:14px;">Fecha: {0} | Archivo fuente: {1}</p>' -f $safeDate, $safeFile))
+  $html.Add('</div>')
+  $html.Add('<div style="margin-bottom:20px; background-color:#f5f7fa; padding:12px 15px; border-radius:5px;">')
+  $html.Add('<p style="margin:0;"><strong>Nota:</strong> minuta reconstruida directamente desde el AGENDA.docx para preservar todos los datos y compromisos cargados en Word.</p>')
+  $html.Add('</div>')
+
+  $lines = @($ExtractedText -split "\r?\n" | ForEach-Object { ([string]$_).Trim() })
+  foreach ($line in $lines) {
+    if ([string]::IsNullOrWhiteSpace($line)) {
+      & $flushTable
+      if ($inList) {
+        $html.Add('</ul>')
+        $inList = $false
+      }
+      continue
+    }
+
+    if ($line -match "\|") {
+      if ($inList) {
+        $html.Add('</ul>')
+        $inList = $false
+      }
+      $tableRows.Add($line)
+      continue
+    }
+
+    & $flushTable
+    $normalizedLine = Normalize-MinutaComparableText -Text $line
+    if ($normalizedLine -match "^(objetivo|agenda|asistentes|cierre|compromisos|reglas transversales|proxima reunion|decisiones|bloqueos|hitos|pipeline|seguimiento|acuerdos)") {
+      if ($inList) {
+        $html.Add('</ul>')
+        $inList = $false
+      }
+      $html.Add(('<h2 style="color:#2E5A8B; font-size:18px; border-left:4px solid #2E5A8B; padding-left:10px; margin:22px 0 10px 0;">{0}</h2>' -f (HtmlEscape $line)))
+      continue
+    }
+
+    if ($line -match "^\s*[\u2610\u2611\u2612\-\*]\s*(.+)$") {
+      if (-not $inList) {
+        $html.Add('<ul style="margin:8px 0 16px 20px; padding:0;">')
+        $inList = $true
+      }
+      $html.Add(('<li style="margin:4px 0;">{0}</li>' -f (HtmlEscape $Matches[1])))
+      continue
+    }
+
+    if ($inList) {
+      $html.Add('</ul>')
+      $inList = $false
+    }
+    $html.Add(('<p style="margin:6px 0 12px 0;">{0}</p>' -f (HtmlEscape $line)))
+  }
+
+  & $flushTable
+  if ($inList) {
+    $html.Add('</ul>')
+  }
+  $html.Add('<div style="margin-top:24px; padding-top:12px; border-top:1px solid #d7dee8; color:#666; font-size:12px;">Minuta MAYU generada desde fuente Word validada.</div>')
+  $html.Add('</div>')
+  return ($html -join "`n")
+}
+
+function Get-FallbackHtml {
+  param(
+    [string]$MeetingTitle,
+    [string]$Date,
+    [string]$SourceFileName,
+    [string]$ExtractedText,
+    [string]$MeetingType = ""
+  )
+
+  return Convert-ExtractedTextToDeterministicHtml `
+    -MeetingTitle $MeetingTitle `
+    -Date $Date `
+    -SourceFileName $SourceFileName `
+    -ExtractedText $ExtractedText `
+    -MeetingType $MeetingType
 }
 
 function Get-MeetingConfigMap {
@@ -589,6 +828,10 @@ function Process-MinutaItem {
     throw "No se pudo extraer texto util desde $($item.name)"
   }
   Write-Output "Texto DOCX extraido: $($text.Length) caracteres / $(@($text -split "`n").Count) lineas."
+  $sourceCommitments = @(Get-CommitmentsFromExtractedText -ExtractedText $text)
+  if ($sourceCommitments.Count -gt 0) {
+    Write-Output "Compromisos detectados en DOCX: $($sourceCommitments.Count)"
+  }
 
   $meetingTitle = [string]$parsed.Meeting.asunto_prefix
   $prompt = Build-MinutaPrompt `
@@ -614,7 +857,33 @@ function Process-MinutaItem {
       -MeetingTitle $meetingTitle `
       -Date $parsed.DateIso `
       -SourceFileName ([string]$item.name) `
-      -ExtractedText $text
+      -ExtractedText $text `
+      -MeetingType $parsed.Tipo
+  }
+
+  $missingCommitments = @()
+  $missingCommitmentsRef = [ref]$missingCommitments
+  $htmlLooksUsable = Test-MinutaHtmlLooksUsable -HtmlBody $htmlBody
+  $coversCommitments = Test-MinutaCoversCommitments `
+    -HtmlBody $htmlBody `
+    -Commitments $sourceCommitments `
+    -MissingCommitments $missingCommitmentsRef
+  $missingCommitments = @($missingCommitmentsRef.Value)
+
+  if (-not $htmlLooksUsable -or -not $coversCommitments) {
+    if (-not $htmlLooksUsable) {
+      Write-Warning "La minuta generada no parece HTML util; se reconstruira desde el DOCX."
+    }
+    if (-not $coversCommitments) {
+      $missingLabels = @($missingCommitments | ForEach-Object { [string]$_.Compromiso }) -join "; "
+      Write-Warning "La minuta generada no cubre $($missingCommitments.Count) de $($sourceCommitments.Count) compromisos del DOCX. Faltan: $missingLabels"
+    }
+    $htmlBody = Convert-ExtractedTextToDeterministicHtml `
+      -MeetingTitle $meetingTitle `
+      -Date $parsed.DateIso `
+      -SourceFileName ([string]$item.name) `
+      -ExtractedText $text `
+      -MeetingType $parsed.Tipo
   }
 
   $subject = "{0} - {1}" -f [string]$parsed.Meeting.asunto_prefix, $parsed.DateIso
