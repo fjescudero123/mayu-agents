@@ -3326,6 +3326,26 @@ function Test-FinanzasAdminLearningActiveN1 {
   (($status -eq "ACTIVA_AUTONOMIA_N1") -or ($activation -eq "AUTONOMIA_CONTROLADA_N1") -or ($level -ge 1))
 }
 
+function Test-FinanzasAdminLearningControlledN1 {
+  param([object]$Learning)
+  if (Test-FinanzasAdminLearningActiveN1 -Learning $Learning) { return $true }
+
+  $status = [string](Get-AdminLearningField -Item $Learning -Name "status")
+  $activation = [string](Get-AdminLearningField -Item $Learning -Name "activationState")
+  $source = [string](Get-AdminLearningField -Item $Learning -Name "source")
+  $skillKey = [string](Get-AdminLearningField -Item $Learning -Name "skillKey")
+  $choiceValue = [string](Get-AdminLearningField -Item $Learning -Name "selectedChoiceValue")
+  $decidedBy = ([string](Get-AdminLearningField -Item $Learning -Name "decidedBy")).ToLowerInvariant()
+
+  if ($status -ne "CANDIDATA_POR_VALIDAR" -or $activation -ne "OBSERVADA") { return $false }
+  if ($source -ne "email") { return $false }
+  if ($decidedBy -notin @("vescudero@imayu.cl", "fjescudero@imayu.cl")) { return $false }
+
+  if ($skillKey -eq "FIN-BAN-SODIMAC-CANJE") { return $true }
+  if ($skillKey -eq "FIN-BAN-CARGOS" -and $choiceValue -eq "PAGO_PROVEEDOR_O_GASTO") { return $true }
+  $false
+}
+
 function Get-FinanzasAdminLearningActivationDateKey {
   param([object[]]$Learnings)
   $dates = @()
@@ -3360,7 +3380,7 @@ function Get-FinanzasAdminChoiceByValue {
 function Get-FinanzasAdminAutonomyDecision {
   param([object]$Case, [object[]]$Learnings)
   if ([string](Get-AdminLearningField -Item $Case -Name "status") -ne "PENDIENTE_VALENTINA") { return $null }
-  $active = @($Learnings | Where-Object { Test-FinanzasAdminLearningActiveN1 -Learning $_ })
+  $active = @($Learnings | Where-Object { Test-FinanzasAdminLearningControlledN1 -Learning $_ })
   if ($active.Count -eq 0) { return $null }
 
   $text = "$([string]$Case.sourceLabel) $([string]$Case.detail) $([string]$Case.question)".ToLowerInvariant()
@@ -3543,9 +3563,9 @@ function Build-FinanzasAdminReport {
   [pscustomobject][ordered]@{
     generatedAt = $Now.ToString("o")
     date = $Now.ToString("yyyy-MM-dd")
-    stage = "piloto_productivo_nivel_3_autonomia_controlada"
-    mandate = "Administrar operativamente Finanzas: ordenar pendientes, bajar alertas a casos individuales, proponer resoluciones en modo sombra y convertir respuestas repetidas en skills aprobables."
-    safety = "Si no es 100% seguro, pregunta. En Nivel 3 aplica skills aprobadas solo para resolver preguntas administrativas repetidas; no modifica datos financieros sensibles."
+    stage = "autonomia_n1_controlada"
+    mandate = "Administrar operativamente Finanzas: ordenar pendientes, bajar alertas a casos individuales, aplicar criterios administrativos N1 aprendidos y convertir respuestas repetidas en skills aprobables."
+    safety = "Si no es 100% seguro, pregunta. En N1 aplica skills seguras solo para resolver preguntas administrativas repetidas; no modifica datos financieros sensibles."
     summary = [pscustomobject][ordered]@{
       pendientes = @($queue).Count
       preguntasValentina = @($questions).Count
@@ -3644,21 +3664,21 @@ function Render-FinanzasAdminHtml {
   $skillsHtml = if ($skillCards.Count -eq 0) { New-MayuEmptyState -Text "Sin skills candidatas nuevas en esta corrida." } else { Render-IssueListCards -Items $skillCards }
   $questionsHtml = Render-FinanzasAdminQuestionCards -Cases @($Report.questions)
   $queueHtml = Render-IssueListCards -Items @($Report.queue | Select-Object -First 40)
-  $casesHtml = if ($caseCards.Count -eq 0) { New-MayuEmptyState -Text "Sin casos individuales en modo sombra." } else { Render-IssueListCards -Items $caseCards }
+  $casesHtml = if ($caseCards.Count -eq 0) { New-MayuEmptyState -Text "Sin casos individuales nuevos." } else { Render-IssueListCards -Items $caseCards }
 
   $content = @"
 <table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;margin:0 0 12px 0;"><tr>$metrics</tr></table>
 <div style="background:#f4f7fb;border-left:4px solid #0078d4;padding:12px 14px;color:#30343b;margin:12px 0 18px 0;">
-  El Administrador Finanzas esta activo como piloto Nivel 3 de autonomia controlada. Baja alertas agrupadas a casos individuales, aplica skills aprobadas para preguntas repetidas y aprende nuevos patrones, pero no modifica datos financieros sin aprobacion.
+  El Administrador Finanzas esta activo en autonomia N1 controlada. Baja alertas agrupadas a casos individuales, aplica criterios administrativos aprendidos para preguntas repetidas y aprende nuevos patrones, pero no modifica datos financieros sin aprobacion.
   <br><br>
   Para responder por correo, Valentina solo debe elegir una alternativa por caso, por ejemplo: <strong>ADM-XXXXXX: A</strong>. Si ninguna alternativa calza, puede responder: <strong>ADM-XXXXXX: corregir: [criterio]</strong>.
 </div>
 $(New-MayuEmailSection -Title "Preguntas para Valentina" -Html $questionsHtml)
-$(New-MayuEmailSection -Title "Casos individuales modo sombra" -Html $casesHtml)
+$(New-MayuEmailSection -Title "Casos individuales" -Html $casesHtml)
 $(New-MayuEmailSection -Title "Skills candidatas" -Html $skillsHtml)
 $(New-MayuEmailSection -Title "Cola operativa" -Html $queueHtml)
 "@
-  New-MayuEmailLayout -Title "Administrador Finanzas MAYU - $($Report.date)" -Subtitle "Piloto productivo Nivel 3: autonomia controlada, casos individuales y skills candidatas." -ContentHtml $content -Footer "El fiscalizador sigue separado: el administrador ordena y aplica criterios administrativos; el fiscalizador valida confiabilidad."
+  New-MayuEmailLayout -Title "Administrador Finanzas MAYU - $($Report.date)" -Subtitle "Autonomia N1 controlada: criterios administrativos aprendidos, casos individuales y skills candidatas." -ContentHtml $content -Footer "El fiscalizador sigue separado: el administrador ordena y aplica criterios administrativos; el fiscalizador valida confiabilidad."
 }
 
 function Save-FinanzasAdminCases {
@@ -3695,7 +3715,7 @@ function Invoke-FinanzasAdmin {
   if ($DoSendEmail) {
     $to = Get-UniqueEmails -Emails @($Config.mail.valentina)
     $cc = Get-UniqueEmails -Emails @($Config.mail.felix)
-    $subject = "[Finanzas Admin] Nivel 3 $dateKey - $($report.summary.pendientes) pendientes, $($report.summary.autoaplicadasN1) auto N1"
+    $subject = "[Finanzas Admin] N1 $dateKey - $($report.summary.pendientes) pendientes, $($report.summary.autoaplicadasN1) auto N1"
     Send-GraphMail -Token $GraphToken -Sender $Config.mail.sender -To $to -Cc $cc -Subject $subject -HtmlBody $html
     Write-Output "Administrador Finanzas: correo enviado a $($to -join ', ')."
   } else {

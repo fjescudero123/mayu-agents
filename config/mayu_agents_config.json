@@ -126,8 +126,9 @@
     "finanzas_admin": {
       "enabled": true,
       "send_email_default": true,
-      "stage": "piloto_nivel_2",
-      "shadow_mode": true
+      "stage": "autonomia_n1_controlada",
+      "shadow_mode": false,
+      "n1_allow_observed_safe_learnings": true
     },
     "finanzas_respuestas": {
       "enabled": true
