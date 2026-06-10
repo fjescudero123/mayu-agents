@@ -4082,8 +4082,9 @@ function ConvertFrom-BiceCartolaText {
       $header = @{}
       for ($i = 0; $i -lt $cols.Count; $i++) {
         $label = ([string]$cols[$i]).ToLowerInvariant()
+        $labelKey = (Normalize-MayuText $label).ToLowerInvariant()
         if ($label -match "fecha" -and -not $header.ContainsKey("fecha")) { $header["fecha"] = $i }
-        if ($label -match "documento|operaci[oó]n|nro|numero|n[uú]mero" -and -not $header.ContainsKey("documento")) { $header["documento"] = $i }
+        if ($labelKey -match "documento|operaci|nro|numero|num|transacci|comprobante" -and -not $header.ContainsKey("documento")) { $header["documento"] = $i }
         if ($label -match "descrip|detalle|glosa|movimiento" -and -not $header.ContainsKey("descripcion")) { $header["descripcion"] = $i }
         if ($label -match "cargo|debe" -and -not $header.ContainsKey("cargo")) { $header["cargo"] = $i }
         if ($label -match "abono|haber" -and -not $header.ContainsKey("abono")) { $header["abono"] = $i }
@@ -4114,8 +4115,14 @@ function ConvertFrom-BiceCartolaText {
       if ($header.ContainsKey("abono") -and $header["abono"] -lt $cols.Count) { $abono = [Math]::Abs((ConvertFrom-ClpText -Text $cols[$header["abono"]])) }
       if ($header.ContainsKey("descripcion") -and $header["descripcion"] -lt $cols.Count) { $withoutDate = [string]$cols[$header["descripcion"]] }
     }
-    if ([string]::IsNullOrWhiteSpace($documento) -and $cols.Count -ge 2 -and ([string]$cols[1]) -match "^\s*\d{5,}\s*$") {
-      $documento = ([string]$cols[1]).Trim()
+    if ([string]::IsNullOrWhiteSpace($documento)) {
+      for ($ci = 1; $ci -lt [Math]::Min($cols.Count, 4); $ci++) {
+        $candidateDoc = ([string]$cols[$ci]).Trim()
+        if ($candidateDoc -match "^\d{5,}$") {
+          $documento = $candidateDoc
+          break
+        }
+      }
     }
     if ($cargo -eq 0 -and $abono -eq 0 -and $cols.Count -ge 4) {
       $tail = @()
@@ -4196,6 +4203,21 @@ function Get-BiceMovementTime {
   [string]$matches[$matches.Count - 1].Value
 }
 
+function Get-BiceMovementIdentityKey {
+  param([object]$Mov)
+  $doc = Normalize-BiceDocument $Mov.documento
+  if ($doc -ne "NA") { return "DOC:$doc" }
+  $text = "$($Mov.descripcion) $($Mov.biceMailRaw)"
+  $time = Get-BiceMovementTime $text
+  if (-not [string]::IsNullOrWhiteSpace($time)) { return "TIME:$time" }
+  $source = [string]$Mov.biceMailSourceFile
+  $line = [string]$Mov.biceMailLineNumber
+  if (-not [string]::IsNullOrWhiteSpace($source) -and -not [string]::IsNullOrWhiteSpace($line) -and $line -ne "0") {
+    return "LINE:$source#$line"
+  }
+  return "TEXT:" + (Get-SimpleHash ((Normalize-MayuText $text).ToLowerInvariant()))
+}
+
 function Test-BiceDocumentsCompatible {
   param([object]$A, [object]$B)
   $aDoc = Normalize-BiceDocument $A
@@ -4203,7 +4225,7 @@ function Test-BiceDocumentsCompatible {
   if ($aDoc -eq "NA" -or $bDoc -eq "NA") { return $false }
   if ($aDoc -eq $bDoc) { return $true }
   if ([Math]::Min($aDoc.Length, $bDoc.Length) -lt 6) { return $false }
-  return $aDoc.EndsWith($bDoc) -or $bDoc.EndsWith($aDoc)
+  return $aDoc.StartsWith($bDoc) -or $bDoc.StartsWith($aDoc) -or $aDoc.EndsWith($bDoc) -or $bDoc.EndsWith($aDoc)
 }
 
 function Test-BiceSameMovementForDedupe {
@@ -4236,6 +4258,7 @@ function Get-BiceImportSignature {
     [string]$Mov.fecha,
     (Normalize-BiceDocument $Mov.documento),
     (Get-BiceMovementAmountKey $Mov),
+    (Get-BiceMovementIdentityKey $Mov),
     (Get-SimpleHash $desc)
   ) -join "|"
 }
@@ -4250,6 +4273,7 @@ function Get-BiceMovementDocId {
     [string]$Mov.fecha,
     (Normalize-BiceDocument $Mov.documento),
     (Get-BiceMovementAmountKey $Mov),
+    (Get-BiceMovementIdentityKey $Mov),
     (Get-SimpleHash $desc)
   ) -join "-"
   $base -replace "[^A-Za-z0-9-]", "_"
@@ -4269,6 +4293,7 @@ function ConvertTo-BiceBankMovement {
     sourceProvider = "BICE_EMAIL"
     apiSync = $true
     biceMailSourceFile = $SourceFile
+    biceMailLineNumber = [int](Get-Number $Row.lineNumber)
     biceMailRaw = [string]$Row.raw
     updatedAt = $NowMs
     createdAt = $NowMs
@@ -4333,9 +4358,9 @@ function Render-BiceCartolaMailHtml {
   }) -join ""
   if (-not $messageRows) { $messageRows = "<tr><td colspan='4' style='border:1px solid #ddd;padding:8px;color:#666;'>No se encontraron correos BICE/cartola en la ventana revisada.</td></tr>" }
   $candidateRows = (@($Report.candidates | Select-Object -First 80) | ForEach-Object {
-    "<tr><td style='border:1px solid #ddd;padding:6px;'>$(HtmlEscape $_.fecha)</td><td style='border:1px solid #ddd;padding:6px;'>$(HtmlEscape $_.direccion)</td><td style='border:1px solid #ddd;padding:6px;text-align:right;'>$(Format-Clp (Get-Number $_.monto))</td><td style='border:1px solid #ddd;padding:6px;'>$(HtmlEscape $_.estado)</td><td style='border:1px solid #ddd;padding:6px;'>$(HtmlEscape $_.descripcion)</td></tr>"
+    "<tr><td style='border:1px solid #ddd;padding:6px;'>$(HtmlEscape $_.fecha)</td><td style='border:1px solid #ddd;padding:6px;'>$(HtmlEscape $_.documento)</td><td style='border:1px solid #ddd;padding:6px;'>$(HtmlEscape $_.direccion)</td><td style='border:1px solid #ddd;padding:6px;text-align:right;'>$(Format-Clp (Get-Number $_.monto))</td><td style='border:1px solid #ddd;padding:6px;'>$(HtmlEscape $_.estado)</td><td style='border:1px solid #ddd;padding:6px;'>$(HtmlEscape $_.descripcion)</td></tr>"
   }) -join ""
-  if (-not $candidateRows) { $candidateRows = "<tr><td colspan='5' style='border:1px solid #ddd;padding:8px;color:#666;'>Sin filas legibles con fecha y monto.</td></tr>" }
+  if (-not $candidateRows) { $candidateRows = "<tr><td colspan='6' style='border:1px solid #ddd;padding:8px;color:#666;'>Sin filas legibles con fecha y monto.</td></tr>" }
   $latestText = if ([string]::IsNullOrWhiteSpace([string]$Report.summary.latestMovementDate)) { "sin fecha leida" } else { [string]$Report.summary.latestMovementDate }
   $statusText = if ((Get-Number $Report.summary.messagesFound) -gt 0) {
     "Ultima cartola leida: $latestText. Movimientos nuevos creados en Finanzas: $($Report.summary.created)."
@@ -4358,7 +4383,7 @@ function Render-BiceCartolaMailHtml {
 <h3 style="font-size:16px;margin:18px 0 8px 0;">Correos revisados</h3>
 <table style="border-collapse:collapse;width:100%;font-size:13px;"><tr><th style='border:1px solid #ddd;padding:6px;text-align:left;'>Recibido</th><th style='border:1px solid #ddd;padding:6px;text-align:left;'>De</th><th style='border:1px solid #ddd;padding:6px;text-align:left;'>Asunto</th><th style='border:1px solid #ddd;padding:6px;text-align:right;'>Adj.</th></tr>$messageRows</table>
 <h3 style="font-size:16px;margin:18px 0 8px 0;">Candidatos de cartola</h3>
-<table style="border-collapse:collapse;width:100%;font-size:13px;"><tr><th style='border:1px solid #ddd;padding:6px;text-align:left;'>Fecha</th><th style='border:1px solid #ddd;padding:6px;text-align:left;'>Tipo</th><th style='border:1px solid #ddd;padding:6px;text-align:right;'>Monto</th><th style='border:1px solid #ddd;padding:6px;text-align:left;'>Estado</th><th style='border:1px solid #ddd;padding:6px;text-align:left;'>Descripcion</th></tr>$candidateRows</table>
+<table style="border-collapse:collapse;width:100%;font-size:13px;"><tr><th style='border:1px solid #ddd;padding:6px;text-align:left;'>Fecha</th><th style='border:1px solid #ddd;padding:6px;text-align:left;'>Doc</th><th style='border:1px solid #ddd;padding:6px;text-align:left;'>Tipo</th><th style='border:1px solid #ddd;padding:6px;text-align:right;'>Monto</th><th style='border:1px solid #ddd;padding:6px;text-align:left;'>Estado</th><th style='border:1px solid #ddd;padding:6px;text-align:left;'>Descripcion</th></tr>$candidateRows</table>
 "@
   New-MayuEmailLayout -Title "BICE Cartola Mail" -Subtitle $Report.date -ContentHtml $content -Footer "Fuente productiva BICE por correo. Los duplicados y filas ambiguas quedan en reporte."
 }
@@ -4446,6 +4471,7 @@ function Invoke-BiceCartolaMail {
     }
     $candidates += [pscustomobject]@{
       fecha = [string]$row.fecha
+      documento = [string]$row.documento
       descripcion = [string]$row.descripcion
       cargo = [double]$row.cargo
       abono = [double]$row.abono
@@ -4455,6 +4481,7 @@ function Invoke-BiceCartolaMail {
       firestoreMatchId = if ($match) { [string]$match.id } else { "" }
       firestoreCreateId = if ($estado -eq "NUEVO_PROBABLE") { [string](Get-BiceMovementDocId -Mov $mov) } else { "" }
       sourceFile = [string]$row.sourceFile
+      lineNumber = [int](Get-Number $row.lineNumber)
       raw = [string]$row.raw
     }
   }
