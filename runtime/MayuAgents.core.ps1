@@ -4927,6 +4927,7 @@ function Convert-DteToFacturaApRecord {
     estado = "PENDIENTE"
     origen = "EMAIL_DTE"
     sourceProvider = "EMAIL_DTE_INBOX"
+    detalleFuente = "EMAIL_DTE"
     apiSync = $true
     periodo = Get-DtePeriodo -Dte $Dte -Now $Now
     dteDetalleEstado = "DISPONIBLE"
@@ -4964,6 +4965,21 @@ function Merge-DteFacturaApRecord {
   )) {
     $prop = $Existing.PSObject.Properties[$name]
     if ($prop -and (Test-HasMayuValue $prop.Value)) { $merged[$name] = $prop.Value }
+  }
+  $existingOrigin = [string]$Existing.origen
+  $existingSource = [string]$Existing.sourceProvider
+  $existingIsOfficialRcv = $existingOrigin -match 'SII_RCV' -or $existingSource -match 'RCV|BaseAPI_RCV|SII_RCV'
+  if ($existingIsOfficialRcv) {
+    foreach ($name in @(
+      "tipoDte", "folio", "rutContraparte", "razonSocialContraparte", "fechaEmision",
+      "fechaRecepcionSii", "fechaVencimiento", "montoExento", "montoNeto", "montoIva",
+      "montoIvaRecuperable", "montoIvaNoRecuperable", "codigoIvaNoRec", "montoTotal",
+      "periodo", "origen", "sourceProvider", "apiSync", "importId", "rcvFuente",
+      "rcvImportadoAt", "validacionRcvEstado", "fechaLimiteReclamo", "estadoSiiDte"
+    )) {
+      $prop = $Existing.PSObject.Properties[$name]
+      if ($prop -and (Test-HasMayuValue $prop.Value)) { $merged[$name] = $prop.Value }
+    }
   }
   foreach ($name in @("createdAt", "createdBy")) {
     $prop = $Existing.PSObject.Properties[$name]
