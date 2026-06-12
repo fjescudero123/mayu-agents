@@ -5186,7 +5186,7 @@ function Invoke-FinanzasDteInbox {
   $messages = @($rawMessages | Where-Object {
     $messageId = [string]$_.id
     $docId = Get-DteInboxDocId -Value $messageId
-    $_.isRead -eq $false -or -not ($processedIds.Contains($messageId) -or $processedIds.Contains($docId))
+    -not ($processedIds.Contains($messageId) -or $processedIds.Contains($docId))
   })
   if ($messages.Count -eq 0) {
     Write-Output "DTE inbox: sin correos pendientes."
