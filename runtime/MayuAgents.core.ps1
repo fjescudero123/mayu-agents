@@ -4634,6 +4634,20 @@ function Get-SafeDocId {
   $id
 }
 
+function Get-DteInboxDocId {
+  param([string]$Value)
+  if ([string]::IsNullOrWhiteSpace($Value)) { return "dte_msg_" + ([guid]::NewGuid().ToString("N")) }
+  $sha = [System.Security.Cryptography.SHA256]::Create()
+  try {
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($Value)
+    $hash = $sha.ComputeHash($bytes)
+    $hex = ([System.BitConverter]::ToString($hash) -replace '-', '').ToLowerInvariant()
+    return "dte_msg_" + $hex.Substring(0, 32)
+  } finally {
+    $sha.Dispose()
+  }
+}
+
 function Convert-AttachmentBytesToText {
   param([byte[]]$Bytes)
   if ($null -eq $Bytes -or $Bytes.Length -eq 0) { return "" }
@@ -5155,7 +5169,7 @@ function Invoke-FinanzasDteInbox {
   }
   $messages = @($rawMessages | Where-Object {
     $messageId = [string]$_.id
-    $docId = Get-SafeDocId -Value $messageId
+    $docId = Get-DteInboxDocId -Value $messageId
     $_.isRead -eq $false -or -not ($processedIds.Contains($messageId) -or $processedIds.Contains($docId))
   })
   if ($messages.Count -eq 0) {
@@ -5176,7 +5190,7 @@ function Invoke-FinanzasDteInbox {
 
     $processed++
     $datePath = $Now.ToString("yyyy/MM/dd")
-    $docId = Get-SafeDocId -Value ([string]$msg.id)
+    $docId = Get-DteInboxDocId -Value ([string]$msg.id)
     $folder = "$baseFolder/$datePath/$docId"
     Ensure-GraphFolder -Token $GraphToken -SiteId $SiteId -FolderPath $folder
 
