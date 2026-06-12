@@ -4978,6 +4978,69 @@ function Upsert-FacturaApFromDteEmail {
   [string]$incoming.id
 }
 
+function Repair-FacturasApFromDteInboxRecords {
+  param(
+    [object]$Config,
+    [string]$IdToken,
+    [string]$DteCollection,
+    [object[]]$InboxRecords,
+    [object[]]$OcRows,
+    [datetime]$Now
+  )
+  $repaired = 0
+  foreach ($item in @($InboxRecords)) {
+    $already = 0
+    if ($item.PSObject.Properties["facturaApUpserted"]) { $already = ConvertTo-MayuInt $item.facturaApUpserted }
+    if ($already -gt 0) { continue }
+
+    $dteDocs = @()
+    if ($item.PSObject.Properties["dtes"] -and $item.dtes) {
+      $dteDocs += @($item.dtes)
+    } elseif ($item.PSObject.Properties["dte"] -and $item.dte) {
+      $dteDocs += $item.dte
+    }
+    $dteDocs = @($dteDocs | Where-Object { $_.ok })
+    if ($dteDocs.Count -eq 0) { continue }
+
+    $ocFolio = ""
+    if ($item.PSObject.Properties["ocFolio"]) { $ocFolio = [string]$item.ocFolio }
+    if ([string]::IsNullOrWhiteSpace($ocFolio)) { $ocFolio = Get-OcFolioFromDtes -Dtes $dteDocs }
+    $oc = Find-MayuOcByFolio -OcRows $OcRows -Folio $ocFolio
+
+    $facturaApIds = @()
+    foreach ($dteDoc in @($dteDocs)) {
+      try {
+        $facturaId = Upsert-FacturaApFromDteEmail `
+          -Config $Config `
+          -IdToken $IdToken `
+          -Dte $dteDoc `
+          -Oc $oc `
+          -InboxId ([string]$item.id) `
+          -GraphMessageId ([string]$item.graphMessageId) `
+          -SharepointFolder ([string]$item.sharepointFolder) `
+          -Now $Now
+        if (-not [string]::IsNullOrWhiteSpace($facturaId)) { $facturaApIds += $facturaId }
+      } catch {
+        Write-Output "DTE inbox: no se pudo reparar cuenta por pagar desde registro existente $($item.id) ($($_.Exception.Message))."
+      }
+    }
+
+    if ($facturaApIds.Count -gt 0) {
+      $hash = [ordered]@{}
+      foreach ($p in $item.PSObject.Properties) { $hash[$p.Name] = $p.Value }
+      $hash["facturaApIds"] = $facturaApIds
+      $hash["facturaApUpserted"] = @($facturaApIds).Count
+      $hash["updatedAt"] = [int64]([datetimeoffset]$Now).ToUnixTimeMilliseconds()
+      Set-FirestoreDocument -Config $Config -Token $IdToken -CollectionName $DteCollection -DocumentId ([string]$item.id) -Data ([pscustomobject]$hash)
+      $repaired += @($facturaApIds).Count
+    }
+  }
+  if ($repaired -gt 0) {
+    Write-Output "DTE inbox: $repaired cuenta(s) por pagar reparadas desde facturas correo existentes."
+  }
+  $repaired
+}
+
 function Get-OcFolioFromText {
   param([string]$Text)
   if ([string]::IsNullOrWhiteSpace($Text)) { return "" }
@@ -5084,6 +5147,7 @@ function Invoke-FinanzasDteInbox {
   $ocRows = @(Get-FinanzasDteOcRows -Config $Config -Token $idToken)
   $dteCollection = if ($Config.collections.fin_dte_inbox) { [string]$Config.collections.fin_dte_inbox } else { "fin_dte_inbox" }
   $existingDtes = @(Get-FirestoreCollection -Config $Config -Token $idToken -CollectionName $dteCollection)
+  [void](Repair-FacturasApFromDteInboxRecords -Config $Config -IdToken $idToken -DteCollection $dteCollection -InboxRecords $existingDtes -OcRows $ocRows -Now $Now)
   $processedIds = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
   foreach ($item in @($existingDtes)) {
     if ($item.graphMessageId) { [void]$processedIds.Add([string]$item.graphMessageId) }
