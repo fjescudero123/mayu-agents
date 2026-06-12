@@ -484,6 +484,33 @@ function Set-FirestoreDocument {
   Invoke-RestMethod -Method Patch -Uri $uri -Headers @{ Authorization = "Bearer $Token" } -ContentType "application/json" -Body $body -TimeoutSec 45 | Out-Null
 }
 
+function Get-FirestoreDocument {
+  param(
+    [object]$Config,
+    [string]$Token,
+    [string]$CollectionName,
+    [string]$DocumentId
+  )
+  $projectId = [string]$Config.firebase.project_id
+  $database = [string]$Config.firebase.database
+  if ([string]::IsNullOrWhiteSpace($database)) { $database = "(default)" }
+  $encodedDb = [Uri]::EscapeDataString($database)
+  $encodedCollection = [Uri]::EscapeDataString($CollectionName)
+  $encodedDoc = [Uri]::EscapeDataString($DocumentId)
+  $uri = "https://firestore.googleapis.com/v1/projects/$projectId/databases/$encodedDb/documents/$encodedCollection/$encodedDoc"
+  try {
+    $doc = Invoke-RestMethod -Method Get -Uri $uri -Headers @{ Authorization = "Bearer $Token" } -TimeoutSec 45
+    return ConvertFrom-FirestoreDocument $doc
+  } catch {
+    $statusCode = $null
+    if ($_.Exception.Response -and $_.Exception.Response.StatusCode) {
+      $statusCode = [int]$_.Exception.Response.StatusCode
+    }
+    if ($statusCode -eq 404) { return $null }
+    throw
+  }
+}
+
 function Add-FirestoreDocument {
   param(
     [object]$Config,
@@ -4669,6 +4696,288 @@ function Parse-DteXmlAttachment {
   }
 }
 
+function ConvertTo-MayuInt {
+  param([object]$Value)
+  if ($null -eq $Value) { return [int64]0 }
+  $text = ([string]$Value).Trim()
+  if ([string]::IsNullOrWhiteSpace($text)) { return [int64]0 }
+  $clean = $text -replace '[^\d-]', ''
+  [int64]$out = 0
+  if ([int64]::TryParse($clean, [ref]$out)) { return $out }
+  [int64]0
+}
+
+function ConvertTo-MayuQuantity {
+  param([object]$Value)
+  if ($null -eq $Value) { return [double]0 }
+  $text = ([string]$Value).Trim()
+  if ([string]::IsNullOrWhiteSpace($text)) { return [double]0 }
+  $clean = $text -replace '[^\d,.\-]', ''
+  if ($clean -match ',' -and $clean -match '\.') {
+    $clean = ($clean -replace '\.', '') -replace ',', '.'
+  } else {
+    $clean = $clean -replace ',', '.'
+  }
+  [double]$out = 0
+  if ([double]::TryParse($clean, [System.Globalization.NumberStyles]::Any, [System.Globalization.CultureInfo]::InvariantCulture, [ref]$out)) {
+    return $out
+  }
+  [double]0
+}
+
+function Normalize-MayuText {
+  param([object]$Value)
+  if ($null -eq $Value) { return "" }
+  $text = ([string]$Value).Trim().ToUpperInvariant()
+  if ([string]::IsNullOrWhiteSpace($text)) { return "" }
+  $text = $text.Normalize([System.Text.NormalizationForm]::FormD)
+  [regex]::Replace($text, '\p{Mn}', '')
+}
+
+function Normalize-MayuRut {
+  param([object]$Value)
+  if ($null -eq $Value) { return "" }
+  $clean = ([string]$Value).Trim().ToUpperInvariant() -replace '[^0-9K]', ''
+  if ($clean.Length -le 1) { return "" }
+  $body = $clean.Substring(0, $clean.Length - 1).TrimStart('0')
+  if ([string]::IsNullOrWhiteSpace($body)) { $body = "0" }
+  $dv = $clean.Substring($clean.Length - 1, 1)
+  "$body-$dv"
+}
+
+function Normalize-MayuLineaNegocio {
+  param([object]$Value)
+  $clean = Normalize-MayuText $Value
+  if ([string]::IsNullOrWhiteSpace($clean)) { return "SIN_CLASIFICAR" }
+  if ($clean -match 'POD') { return "POD" }
+  if ($clean -match 'MOMENTUM|MODULAR') { return "MODULAR" }
+  if ($clean -match 'TRANSITORIA|EMERGENCIA|PIR') { return "EMERGENCIA" }
+  if ($clean -match 'GALPON|INDUSTRIAL|HOTEL') { return "INDUSTRIAL" }
+  if ($clean -match 'CATALOG') { return "CATALOGADOS" }
+  if ($clean -match 'OPEX|ADMIN|OFICINA') { return "OPEX_CORP" }
+  "SIN_CLASIFICAR"
+}
+
+function Get-DteFacturaDocId {
+  param([object]$Dte)
+  if ($null -eq $Dte -or -not $Dte.ok) { return "" }
+  $tipo = ConvertTo-MayuInt $Dte.tipoDte
+  $rut = Normalize-MayuRut $Dte.rutEmisor
+  $folio = ([string]$Dte.folio).Trim()
+  if ($tipo -le 0 -or [string]::IsNullOrWhiteSpace($rut) -or [string]::IsNullOrWhiteSpace($folio)) { return "" }
+  Get-SafeDocId -Value "$tipo-$rut-$folio"
+}
+
+function Get-DtePeriodo {
+  param([object]$Dte, [datetime]$Now)
+  $fecha = ([string]$Dte.fechaEmision).Trim()
+  if ($fecha -match '^\d{4}-\d{2}') { return $fecha.Substring(0, 7) }
+  $parsed = [datetime]::MinValue
+  if ([datetime]::TryParse($fecha, [ref]$parsed)) { return $parsed.ToString("yyyy-MM") }
+  $Now.ToString("yyyy-MM")
+}
+
+function Convert-DteReferencesForFactura {
+  param([object]$Dte)
+  $rows = @()
+  foreach ($ref in @($Dte.referencias)) {
+    $folio = ([string]$ref.folio).Trim()
+    if ([string]::IsNullOrWhiteSpace($folio)) { continue }
+    $rows += [pscustomobject][ordered]@{
+      tipo = ([string]$ref.tipoDoc).Trim()
+      folio = $folio
+      razon = ([string]$ref.razon).Trim()
+    }
+  }
+  @($rows)
+}
+
+function Convert-DteItemsForFactura {
+  param([object]$Dte)
+  $rows = @()
+  foreach ($item in @($Dte.detalles)) {
+    $name = ([string]$item.nombre).Trim()
+    $amount = ConvertTo-MayuInt $item.monto
+    if ([string]::IsNullOrWhiteSpace($name) -and $amount -eq 0) { continue }
+    $rows += [pscustomobject][ordered]@{
+      nombre = $name
+      cantidad = ConvertTo-MayuQuantity $item.cantidad
+      monto = $amount
+    }
+  }
+  @($rows)
+}
+
+function Test-HasMayuValue {
+  param([object]$Value)
+  if ($null -eq $Value) { return $false }
+  if ($Value -is [string]) { return -not [string]::IsNullOrWhiteSpace([string]$Value) }
+  if ($Value -is [System.Array]) { return @($Value).Count -gt 0 }
+  $true
+}
+
+function Get-DteOcFinancePatch {
+  param([object]$Dte, [object]$Oc, [datetime]$Now)
+  $patch = [ordered]@{}
+  if ($null -eq $Oc) { return $patch }
+
+  $rawDestino = Normalize-MayuText (Get-DteObjectText -Item $Oc -Names @("destinoFinanciero", "tipoDestinoFinanciero", "categoriaFinanciera", "tratamientoFinanciero", "tipoCompra", "tipoOc"))
+  $projectId = Get-DteObjectText -Item $Oc -Names @("projectId", "matProjectId", "proyectoId")
+  $projectName = Get-DteObjectText -Item $Oc -Names @("projectName", "matProjectName", "proyectoNombre")
+  $lineaRaw = Get-DteObjectText -Item $Oc -Names @("lineaNegocio", "linea", "businessLine")
+
+  if ($rawDestino -match 'HERRAMIENTA') {
+    $patch["proyectoId"] = $null
+    $patch["lineaNegocio"] = "OPEX_CORP"
+    $patch["categoriaContable"] = "INVERSION"
+    $patch["tratamientoFinanciero"] = "HERRAMIENTAS"
+  } elseif ($rawDestino -match 'STOCK') {
+    $patch["proyectoId"] = $null
+    $patch["lineaNegocio"] = "SIN_CLASIFICAR"
+    $patch["categoriaContable"] = "OTRO"
+    $patch["tratamientoFinanciero"] = "STOCK_GENERAL"
+  } elseif ($rawDestino -match 'OPEX|OFICINA|MARKETING') {
+    $patch["proyectoId"] = $null
+    $patch["lineaNegocio"] = "OPEX_CORP"
+    $patch["categoriaContable"] = if ($rawDestino -match 'VARIABLE') { "OPEX_VARIABLE" } else { "OPEX_FIJO" }
+  } else {
+    if (-not [string]::IsNullOrWhiteSpace($projectId)) { $patch["proyectoId"] = $projectId }
+    if (-not [string]::IsNullOrWhiteSpace($projectName)) { $patch["projectName"] = $projectName }
+    $patch["lineaNegocio"] = Normalize-MayuLineaNegocio $lineaRaw
+    $patch["categoriaContable"] = "COSTO_DIRECTO"
+  }
+
+  $ocFolio = Get-DteObjectText -Item $Oc -Names @("folio", "ocFolio", "folioMAYU", "mayuOcFolio", "pdfFileName", "ocFileName")
+  $ocHeaderId = Get-DteObjectText -Item $Oc -Names @("id", "ocHeaderId", "headerId")
+  $matProjectId = Get-DteObjectText -Item $Oc -Names @("matProjectId", "projectId", "proyectoId")
+  $ocFileName = Get-DteObjectText -Item $Oc -Names @("pdfFileName", "ocFileName")
+  $rutProveedor = Normalize-MayuRut (Get-DteObjectText -Item $Oc -Names @("proveedorRut", "rutProveedor"))
+  $montoAsignado = [Math]::Abs((ConvertTo-MayuInt $Dte.montoTotal))
+
+  $patch["clasificacionOrigen"] = "OC_MAYU_AUTO"
+  $patch["ocsVinculadas"] = @([pscustomobject][ordered]@{
+    matProjectId = $matProjectId
+    ocFileName = $ocFileName
+    ocHeaderId = $ocHeaderId
+    ocFolio = $ocFolio
+    proveedorRut = $rutProveedor
+    montoAsignado = $montoAsignado
+  })
+  $patch["ocMatch"] = [pscustomobject][ordered]@{
+    estado = "AUTO_APLICADO"
+    confianza = 99
+    razones = @("Referencia OC en DTE/correo")
+    ocHeaderId = $ocHeaderId
+    ocFolio = $ocFolio
+    matProjectId = $matProjectId
+    matchedAt = $Now.ToString("o")
+    fuente = "EMAIL_DTE_INBOX"
+  }
+  if (-not [string]::IsNullOrWhiteSpace($ocFolio)) {
+    $patch["notas"] = "Clasificada automaticamente por OC MAYU $ocFolio desde factura recibida por correo."
+  } else {
+    $patch["notas"] = "Clasificada automaticamente por OC MAYU desde factura recibida por correo."
+  }
+  $patch
+}
+
+function Convert-DteToFacturaApRecord {
+  param(
+    [object]$Dte,
+    [object]$Oc,
+    [string]$InboxId,
+    [string]$GraphMessageId,
+    [string]$SharepointFolder,
+    [datetime]$Now
+  )
+  $docId = Get-DteFacturaDocId -Dte $Dte
+  if ([string]::IsNullOrWhiteSpace($docId)) { return $null }
+  $nowMs = [int64]([datetimeoffset]$Now).ToUnixTimeMilliseconds()
+  $tipo = ConvertTo-MayuInt $Dte.tipoDte
+  $record = [ordered]@{
+    id = $docId
+    tipoDte = $tipo
+    folio = ([string]$Dte.folio).Trim()
+    rutContraparte = Normalize-MayuRut $Dte.rutEmisor
+    razonSocialContraparte = ([string]$Dte.razonSocialEmisor).Trim()
+    fechaEmision = ([string]$Dte.fechaEmision).Trim()
+    fechaVencimiento = ([string]$Dte.fechaEmision).Trim()
+    montoExento = ConvertTo-MayuInt $Dte.montoExento
+    montoNeto = ConvertTo-MayuInt $Dte.montoNeto
+    montoIva = ConvertTo-MayuInt $Dte.iva
+    montoIvaRecuperable = ConvertTo-MayuInt $Dte.iva
+    montoIvaNoRecuperable = 0
+    montoTotal = ConvertTo-MayuInt $Dte.montoTotal
+    lineaNegocio = "SIN_CLASIFICAR"
+    categoriaContable = if ($tipo -eq 61) { "OTRO" } else { "COSTO_DIRECTO" }
+    estado = "PENDIENTE"
+    origen = "EMAIL_DTE"
+    sourceProvider = "EMAIL_DTE_INBOX"
+    apiSync = $true
+    periodo = Get-DtePeriodo -Dte $Dte -Now $Now
+    dteDetalleEstado = "DISPONIBLE"
+    dteDetalleUpdatedAt = $nowMs
+    dteXmlDisponible = $true
+    referenciasDte = @(Convert-DteReferencesForFactura -Dte $Dte)
+    dteDetalleItems = @(Convert-DteItemsForFactura -Dte $Dte)
+    emailDteInboxId = $InboxId
+    emailGraphMessageId = $GraphMessageId
+    emailSharepointFolder = $SharepointFolder
+    validacionRcvEstado = "PENDIENTE_RCV"
+    createdAt = $nowMs
+    createdBy = "system-finanzas"
+    updatedAt = $nowMs
+  }
+  $patch = Get-DteOcFinancePatch -Dte $Dte -Oc $Oc -Now $Now
+  foreach ($p in $patch.GetEnumerator()) {
+    $record[$p.Key] = $p.Value
+  }
+  [pscustomobject]$record
+}
+
+function Merge-DteFacturaApRecord {
+  param([object]$Existing, [object]$Incoming)
+  if ($null -eq $Existing) { return $Incoming }
+  $merged = [ordered]@{}
+  foreach ($p in $Incoming.PSObject.Properties) {
+    $merged[$p.Name] = $p.Value
+  }
+  foreach ($name in @(
+    "lineaNegocio", "proyectoId", "projectName", "categoriaContable", "cuentaContable",
+    "estado", "tratamientoFinanciero", "ocsVinculadas", "asignaciones", "notas",
+    "reglaClasificacionId", "clasificacionOrigen", "ocMatch", "auditoriaFinanzasEstado",
+    "siiPendienteAccion"
+  )) {
+    $prop = $Existing.PSObject.Properties[$name]
+    if ($prop -and (Test-HasMayuValue $prop.Value)) { $merged[$name] = $prop.Value }
+  }
+  foreach ($name in @("createdAt", "createdBy")) {
+    $prop = $Existing.PSObject.Properties[$name]
+    if ($prop -and (Test-HasMayuValue $prop.Value)) { $merged[$name] = $prop.Value }
+  }
+  [pscustomobject]$merged
+}
+
+function Upsert-FacturaApFromDteEmail {
+  param(
+    [object]$Config,
+    [string]$IdToken,
+    [object]$Dte,
+    [object]$Oc,
+    [string]$InboxId,
+    [string]$GraphMessageId,
+    [string]$SharepointFolder,
+    [datetime]$Now
+  )
+  $incoming = Convert-DteToFacturaApRecord -Dte $Dte -Oc $Oc -InboxId $InboxId -GraphMessageId $GraphMessageId -SharepointFolder $SharepointFolder -Now $Now
+  if ($null -eq $incoming) { return "" }
+  $collection = if ($Config.collections.fin_facturas_ap) { [string]$Config.collections.fin_facturas_ap } else { "fin_facturas_ap" }
+  $existing = Get-FirestoreDocument -Config $Config -Token $IdToken -CollectionName $collection -DocumentId ([string]$incoming.id)
+  $record = Merge-DteFacturaApRecord -Existing $existing -Incoming $incoming
+  Set-FirestoreDocument -Config $Config -Token $IdToken -CollectionName $collection -DocumentId ([string]$incoming.id) -Data $record
+  [string]$incoming.id
+}
+
 function Get-OcFolioFromText {
   param([string]$Text)
   if ([string]::IsNullOrWhiteSpace($Text)) { return "" }
@@ -4845,6 +5154,15 @@ function Invoke-FinanzasDteInbox {
     $oc = Find-MayuOcByFolio -OcRows $ocRows -Folio $ocFolio
     $estado = if ($attachmentRows.Count -eq 0) { "SIN_ADJUNTOS" } elseif ($ocFolio -and $oc) { "OC_MATCH" } elseif ($ocFolio) { "OC_NO_ENCONTRADA" } else { "SIN_OC" }
     $dtePrincipal = @($dteDocs | Where-Object { $_.ok } | Select-Object -First 1)
+    $facturaApIds = @()
+    foreach ($dteDoc in @($dteDocs | Where-Object { $_.ok })) {
+      try {
+        $facturaId = Upsert-FacturaApFromDteEmail -Config $Config -IdToken $idToken -Dte $dteDoc -Oc $oc -InboxId $docId -GraphMessageId ([string]$msg.id) -SharepointFolder $folder -Now $Now
+        if (-not [string]::IsNullOrWhiteSpace($facturaId)) { $facturaApIds += $facturaId }
+      } catch {
+        Write-Output "DTE inbox: no se pudo crear cuenta por pagar desde XML ($($_.Exception.Message))."
+      }
+    }
 
     $record = [pscustomobject][ordered]@{
       id = $docId
@@ -4871,6 +5189,8 @@ function Invoke-FinanzasDteInbox {
       tipoCompra = if ($oc) { Get-DteObjectText -Item $oc -Names @("tipoCompra", "tipoOc") } else { "" }
       dte = if ($dtePrincipal.Count -gt 0) { $dtePrincipal[0] } else { [pscustomobject]@{} }
       dtes = $dteDocs
+      facturaApIds = $facturaApIds
+      facturaApUpserted = @($facturaApIds).Count
     }
 
     $json = $record | ConvertTo-Json -Depth 80
